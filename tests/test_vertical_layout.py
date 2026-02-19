@@ -226,6 +226,100 @@ class TestVerticalLayouts(unittest.TestCase):
         self.assertEqual(cam_crop_mock.call_count, 2)
         content_crop_mock.assert_called_once_with((520, 260, 420, 420), 1920, 1080, 1080 / 1280)
 
+    def test_detect_webcam_region_finds_corner_overlay(self):
+        """Webcam с чёткими границами и другим цветом должен обнаруживаться."""
+        import numpy as np
+        import cv2
+        # Синтетический кадр 1920x1080 с webcam оверлеем в левом верхнем углу
+        frame1 = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame1[:, :, :] = 30  # тёмный фон (игра)
+
+        # Webcam overlay 422x237 в top-left с яркой границей
+        cam_w, cam_h = 422, 237
+        frame1[0:cam_h, 0:cam_w, :] = 200  # яркий webcam
+        # Рисуем чёткую границу (как в реальных оверлеях)
+        cv2.rectangle(frame1, (0, 0), (cam_w, cam_h), (255, 255, 255), 2)
+
+        # Второй кадр с немного другим контентом внутри webcam
+        frame2 = frame1.copy()
+        frame2[50:150, 50:200, :] = 180
+        frame3 = frame1.copy()
+        frame3[60:160, 60:210, :] = 170
+
+        frames = [frame1, frame2, frame3]
+        result = vertical._detect_webcam_region(1920, 1080, frames, subject_side="left")
+        self.assertIsNotNone(result, "Webcam region должен быть обнаружен")
+        rx, ry, rw, rh = result
+        # Проверяем что найденный регион в левом верхнем углу
+        self.assertLessEqual(rx, 100, "x должен быть близко к левому краю")
+        self.assertLessEqual(ry, 100, "y должен быть близко к верхнему краю")
+
+    def test_detect_webcam_region_finds_left_edge_overlay(self):
+        """Webcam посередине левого края должен обнаруживаться."""
+        import numpy as np
+        import cv2
+        frame1 = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame1[:, :, :] = 30
+
+        # Webcam 400x250 слева по центру
+        cam_w, cam_h = 400, 250
+        cam_y = (1080 - cam_h) // 2
+        
+        # Рисуем webcam
+        frame1[cam_y:cam_y+cam_h, 0:cam_w, :] = 200
+        cv2.rectangle(frame1, (0, cam_y), (cam_w, cam_y+cam_h), (255, 255, 255), 2)
+
+        # Движение
+        frame2 = frame1.copy()
+        frame2[cam_y+50:cam_y+150, 50:150, :] = 180
+        frames = [frame1, frame2, frame1]
+
+        result = vertical._detect_webcam_region(1920, 1080, frames, subject_side="left")
+        self.assertIsNotNone(result, "Webcam на левом краю должен быть найден")
+        rx, ry, rw, rh = result
+        self.assertLessEqual(rx, 50, "x должен быть у края")
+        self.assertTrue(abs(ry - cam_y) < 50, "y должен быть примерно по центру")
+
+    def test_detect_webcam_region_returns_none_on_uniform_frames(self):
+        """Однородные кадры без webcam-оверлея — результат None."""
+        import numpy as np
+        frame = np.ones((1080, 1920, 3), dtype=np.uint8) * 128
+        frames = [frame.copy(), frame.copy(), frame.copy()]
+        result = vertical._detect_webcam_region(1920, 1080, frames, subject_side="auto")
+        self.assertIsNone(result, "На однородных кадрах webcam не должен обнаруживаться")
+
+
+    def test_detect_webcam_region_boosts_score_with_face(self):
+        """Webcam с лицом внутри должен получать высокий скор."""
+        import numpy as np
+        import cv2
+        from unittest.mock import MagicMock
+
+        # Создаём кадр с "webcam"
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[:, :, :] = 30
+        
+        cam_w, cam_h = 400, 300
+        cam_x, cam_y = 0, 0
+        frame[cam_y:cam_y+cam_h, cam_x:cam_x+cam_w, :] = 200
+        cv2.rectangle(frame, (cam_x, cam_y), (cam_x+cam_w, cam_y+cam_h), (255, 255, 255), 2)
+        
+        frames = [frame.copy(), frame.copy()] # Мало движения
+
+        # Mock detector that returns a face inside the webcam rect
+        mock_detector = MagicMock()
+        # detectMultiScale returns list of (x,y,w,h). 
+        # Face inside webcam: 100,100, 100,100 (relative to crop!)
+        mock_detector.detectMultiScale.return_value = [(100, 100, 100, 100)]
+        
+        detectors = [{"name": "mock", "detector": mock_detector}]
+
+        result = vertical._detect_webcam_region(1920, 1080, frames, detectors=detectors, subject_side="left")
+        
+        self.assertIsNotNone(result)
+        # Check that detectMultiScale was called
+        self.assertTrue(mock_detector.detectMultiScale.called)
+
 
 if __name__ == "__main__":
     unittest.main()

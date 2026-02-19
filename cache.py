@@ -24,14 +24,19 @@ def ensure_cache_dirs():
     os.makedirs(PROCESSED_VIDEOS_DIR, exist_ok=True)
 
 
-def get_file_hash(file_path):
+def get_file_hash(file_path, chunk_size=1024 * 1024):
     """
     Вычисляет хэш файла для идентификации.
+    Читает файл чанками, чтобы не загружать всё видео в RAM.
     """
     hasher = hashlib.md5()
     try:
         with open(file_path, 'rb') as f:
-            hasher.update(f.read())
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                hasher.update(chunk)
         return hasher.hexdigest()
     except Exception as e:
         logger.error(f"Ошибка вычисления хэша: {e}")

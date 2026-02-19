@@ -443,6 +443,10 @@ async def process_video_task(chat_id, video_path, message, context=None, user_se
                     sent_count,
                 )
                 await tracker.complete("Видео успешно обработано!")
+        
+        # Выгружаем модель из памяти после завершения обработки
+        from transcribe import unload_whisper_model
+        await asyncio.to_thread(unload_whisper_model)
 
     except Exception as e:
         if chat_id in processing_jobs:

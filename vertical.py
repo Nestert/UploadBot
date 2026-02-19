@@ -26,20 +26,10 @@ _DETECTOR_BONUS = {
 _SUPPORTED_FACECAM_SIDES = {"left", "right", "auto"}
 
 
-def _escape_ffmpeg_subtitles_path(path):
-    """Экранирует путь для фильтра subtitles в ffmpeg."""
-    return (
-        path.replace("\\", "\\\\")
-        .replace(":", "\\:")
-        .replace(",", "\\,")
-        .replace("'", "\\'")
-    )
-
-
-def _run_ffmpeg(cmd, error_prefix):
+def _run_ffmpeg(cmd, error_prefix, cwd=None):
     """Запускает ffmpeg-команду и пробрасывает понятную ошибку."""
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, cwd=cwd)
     except subprocess.CalledProcessError as exc:
         raise Exception(f"{error_prefix}: {exc}") from exc
 
@@ -72,8 +62,12 @@ def _run_standard_layout(
         f"crop={target_width}:{target_height},"
         f"setsar=1,setdar={target_width}/{target_height}"
     )
+    # На Windows используем basename + cwd, чтобы не экранировать путь в фильтре
+    subs_cwd = None
     if subs_file:
-        vf_str = f"{vf_str},subtitles={_escape_ffmpeg_subtitles_path(subs_file)}"
+        subs_cwd = os.path.dirname(os.path.abspath(subs_file))
+        subs_name = os.path.basename(subs_file)
+        vf_str = f"{vf_str},subtitles={subs_name}"
 
     cmd = [
         "ffmpeg",
@@ -88,7 +82,7 @@ def _run_standard_layout(
         "-y",
     ]
     started = time.perf_counter()
-    _run_ffmpeg(cmd, "Ошибка вертикального ресайза видео")
+    _run_ffmpeg(cmd, "Ошибка вертикального ресайза видео", cwd=subs_cwd)
     ffmpeg_encode_ms = int((time.perf_counter() - started) * 1000)
     logging.info(
         "Vertical encode done: mode=standard face_found_source=%s ffmpeg_encode_ms=%s",
@@ -745,7 +739,7 @@ def _build_content_crop(face_box, source_w, source_h, bottom_aspect):
 
     center_x = source_w / 2
     center_y = source_h / 2
-    center_x += (base_w * 0.15) if face_cx < source_w / 2 else -(base_w * 0.15)
+    # center_x += (base_w * 0.15) if face_cx < source_w / 2 else -(base_w * 0.15)
     center_y += (base_h * 0.08) if face_cy < source_h / 2 else -(base_h * 0.08)
 
     return _fit_aspect_crop(center_x, center_y, source_w, source_h, bottom_aspect, preferred_h=base_h)
@@ -778,83 +772,307 @@ def _skin_ratio_bgr(frame):
     return float(cv2.countNonZero(mask)) / total
 
 
-def _heuristic_face_box_from_corners(source_w, source_h, frames, subject_side="auto"):
+def _edge_strength_at_boundary(gray_frame, x, y, w, h, thickness=3):
+    """Измеряет силу границ (edges) на краях прямоугольника webcam-оверлея."""
+    if cv2 is None or gray_frame is None:
+        return 0.0
+    fh, fw = gray_frame.shape[:2]
+    if w < 6 or h < 6:
+        return 0.0
+
+    edges = cv2.Canny(gray_frame, 50, 150)
+    t = max(1, thickness)
+    boundary_pixels = []
+
+    # Top edge
+    y1, y2 = max(0, y - t), min(fh, y + t)
+    x1, x2 = max(0, x), min(fw, x + w)
+    if y2 > y1 and x2 > x1:
+        boundary_pixels.append(edges[y1:y2, x1:x2])
+    # Bottom edge
+    by = y + h
+    y1, y2 = max(0, by - t), min(fh, by + t)
+    if y2 > y1 and x2 > x1:
+        boundary_pixels.append(edges[y1:y2, x1:x2])
+    # Left edge
+    x1, x2 = max(0, x - t), min(fw, x + t)
+    y1, y2 = max(0, y), min(fh, y + h)
+    if y2 > y1 and x2 > x1:
+        boundary_pixels.append(edges[y1:y2, x1:x2])
+    # Right edge
+    rx = x + w
+    x1, x2 = max(0, rx - t), min(fw, rx + t)
+    if y2 > y1 and x2 > x1:
+        boundary_pixels.append(edges[y1:y2, x1:x2])
+
+    if not boundary_pixels:
+        return 0.0
+
+    import numpy as np
+    combined = np.concatenate([p.ravel() for p in boundary_pixels])
+    if combined.size == 0:
+        return 0.0
+    return float(np.count_nonzero(combined)) / float(combined.size)
+
+
+def _histogram_divergence(frame, x, y, w, h):
+    """Разница гистограмм цвета между ROI и остальной частью кадра."""
+    if cv2 is None or frame is None:
+        return 0.0
+    fh, fw = frame.shape[:2]
+    roi = frame[max(0, y):min(fh, y + h), max(0, x):min(fw, x + w)]
+    if roi is None or roi.size == 0:
+        return 0.0
+
+    import numpy as np
+    # Маска для "вне ROI"
+    mask_outside = np.ones((fh, fw), dtype=np.uint8) * 255
+    mask_outside[max(0, y):min(fh, y + h), max(0, x):min(fw, x + w)] = 0
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hist_roi = cv2.calcHist([hsv], [0, 1], None, [30, 32],
+                            [0, 180, 0, 256])
+    # Обнуляем и пересчитываем для outside
+    hsv_roi = hsv[max(0, y):min(fh, y + h), max(0, x):min(fw, x + w)]
+    hist_roi = cv2.calcHist([hsv_roi], [0, 1], None, [30, 32],
+                            [0, 180, 0, 256])
+    hist_outside = cv2.calcHist([hsv], [0, 1], mask_outside, [30, 32],
+                                [0, 180, 0, 256])
+
+    cv2.normalize(hist_roi, hist_roi)
+    cv2.normalize(hist_outside, hist_outside)
+
+    # Bhattacharyya distance: 0 = identical, 1 = completely different
+    distance = cv2.compareHist(hist_roi, hist_outside, cv2.HISTCMP_BHATTACHARYYA)
+    return float(distance)
+
+
+def _temporal_activity_in_region(frames, x, y, w, h):
+    """Средняя межкадровая дельта (активность) внутри указанного прямоугольника."""
+    if cv2 is None or len(frames) < 2:
+        return 0.0
+    import numpy as np
+    fh_max, fw_max = frames[0].shape[:2]
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(fw_max, x + w)
+    y2 = min(fh_max, y + h)
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+
+    deltas = []
+    prev_gray = cv2.cvtColor(frames[0][y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+    for frame in frames[1:]:
+        cur_gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        diff = cv2.absdiff(prev_gray, cur_gray)
+        deltas.append(float(np.mean(diff)) / 255.0)
+        prev_gray = cur_gray
+
+    return statistics.mean(deltas) if deltas else 0.0
+
+
+def _boundary_consistency(frames, x, y, w, h, thickness=3):
     """
-    Резервная эвристика, если детектор лиц не сработал:
-    ищем наиболее вероятный webcam-блок в углах по skin ratio.
+    Стабильность границы: насколько одинаковы edge-линии на границе
+    прямоугольника по всем кадрам. Высокая стабильность = устойчивый оверлей.
     """
-    if cv2 is None:
+    if cv2 is None or len(frames) < 2:
+        return 0.0
+    import numpy as np
+    edge_strengths = []
+    for frame in frames:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        strength = _edge_strength_at_boundary(gray, x, y, w, h, thickness)
+        edge_strengths.append(strength)
+
+    if not edge_strengths:
+        return 0.0
+    mean_str = statistics.mean(edge_strengths)
+    std_str = statistics.stdev(edge_strengths) if len(edge_strengths) > 1 else 0.0
+    # Высокая средняя сила + низкое отклонение = устойчивая граница
+    if mean_str <= 0:
+        return 0.0
+    consistency = mean_str * max(0.0, 1.0 - (std_str / max(mean_str, 0.001)))
+    return _clamp(consistency, 0.0, 1.0)
+
+
+def _detect_webcam_region(source_w, source_h, frames, detectors=None, subject_side="auto"):
+    """
+    Находит прямоугольный webcam-оверлей через контурный анализ:
+    Canny edges → findContours → фильтр по размеру/прямоугольности/углу.
+    Если передан detectors, проверяет наличие лица внутри кандидата (+score).
+    Возвращает (x, y, w, h) webcam-оверлея или None.
+    """
+    if cv2 is None or not frames:
         return None
-    if not frames:
-        return None
+    import numpy as np
 
     normalized_side = _normalize_subject_side(subject_side)
-    aspect_candidates = (16 / 9, 4 / 3, 1.0)
-    width_ratios = (0.22, 0.28, 0.34)
-    if normalized_side == "left":
-        corner_anchors = ("tl", "bl", "tr", "br")
-    elif normalized_side == "right":
-        corner_anchors = ("tr", "br", "tl", "bl")
-    else:
-        corner_anchors = ("tl", "tr", "bl", "br")
-    candidates = []
+    frame = frames[0]
+    fh, fw = frame.shape[:2]
 
-    for anchor in corner_anchors:
-        for wr in width_ratios:
-            for ar in aspect_candidates:
-                w = int(round(source_w * wr))
-                h = int(round(w / ar))
-                if w < 40 or h < 40 or h > source_h * 0.55:
-                    continue
+    frame_area = fw * fh
+    min_area = int(frame_area * 0.003)   # от 0.3% кадра
+    max_area = int(frame_area * 0.40)    # до 40% кадра
 
-                if anchor == "tl":
-                    x, y = 0, 0
-                elif anchor == "tr":
-                    x, y = source_w - w, 0
-                elif anchor == "bl":
-                    x, y = 0, source_h - h
-                else:
-                    x, y = source_w - w, source_h - h
-                candidates.append((x, y, w, h))
+    # Несколько порогов Canny для надёжности
+    all_rects = []
+    for low_t, high_t in ((30, 100), (50, 150), (80, 200)):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, low_t, high_t)
 
-    if not candidates:
-        return None
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        edges = cv2.dilate(edges, kernel, iterations=2)
+        edges = cv2.erode(edges, kernel, iterations=1)
 
-    scores = []
-    for cand in candidates:
-        x, y, w, h = cand
-        ratios = []
-        contrasts = []
-        for frame in frames:
-            roi = frame[y:y + h, x:x + w]
-            if roi is None or roi.size == 0:
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < min_area or area > max_area:
                 continue
-            ratios.append(_skin_ratio_bgr(roi))
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            contrasts.append(float(gray.std()) / 255.0)
-        if not ratios:
-            continue
-        # Немного учитываем контраст, чтобы отсечь однотонные углы.
-        center_x = x + (w / 2.0)
-        side_bonus = _side_score(center_x, source_w, normalized_side)
-        score = (
-            (statistics.mean(ratios) * 0.75)
-            + (statistics.mean(contrasts) * 0.15)
-            + (side_bonus * 0.10)
+
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            if len(approx) < 4 or len(approx) > 6:
+                continue
+
+            bx, by, bw, bh = cv2.boundingRect(approx)
+            rect_area = bw * bh
+            if rect_area < min_area or bw < 30 or bh < 30:
+                continue
+            rectangularity = area / float(rect_area)
+            if rectangularity < 0.60:
+                continue
+            aspect = bw / float(bh)
+            if aspect < 0.3 or aspect > 5.0:
+                continue
+
+            # Должен касаться левого или правого края
+            margin_x = fw * 0.02
+            touches_left = bx <= margin_x
+            touches_right = (bx + bw) >= fw - margin_x
+
+            position = None
+            if touches_left:
+                position = "left_edge"
+            elif touches_right:
+                position = "right_edge"
+
+            # Если не касается ни левого, ни правого края — пропускаем
+            if position is None:
+                continue
+
+            all_rects.append({
+                "rect": (bx, by, bw, bh),
+                "position": position,
+                "area": rect_area,
+                "rectangularity": rectangularity,
+            })
+
+    if not all_rects:
+        logging.debug("webcam_region: no rectangular contours found on left/right edges")
+        return None
+
+    # Убираем дубликаты (IoU > 0.5)
+    unique = []
+    for r in all_rects:
+        is_dup = False
+        for u in unique:
+            iou = _box_iou(r["rect"], u["rect"])
+            if iou > 0.5:
+                is_dup = True
+                if r["area"] > u["area"]:
+                    unique.remove(u)
+                    unique.append(r)
+                break
+        if not is_dup:
+            unique.append(r)
+
+    # Скоринг
+    scored = []
+    for cand in unique:
+        cx, cy, cw, ch = cand["rect"]
+        s_hist = _histogram_divergence(frames[0], cx, cy, cw, ch)
+        
+        # Активность (движение)
+        raw_activity = _temporal_activity_in_region(frames, cx, cy, cw, ch)
+        s_activity = _clamp(raw_activity / 0.05, 0.0, 1.0) if len(frames) >= 2 else 0.5
+        if raw_activity < 0.005:
+            s_activity = 0.0
+
+        center_x = cx + cw / 2.0
+        s_side = _side_score(center_x, source_w, normalized_side)
+        s_rect = cand["rectangularity"]
+
+        # Face check inside the candidate
+        s_face = 0.0
+        if detectors:
+            # Crop to candidate
+            crop = frame[max(0, cy):min(fh, cy + ch), max(0, cx):min(fw, cx + cw)]
+            if crop.size > 0:
+                face_res = _detect_largest_face(crop, detectors)
+                if face_res:
+                    # Found a face inside the webcam candidate!
+                    # Check if face size is reasonable relative to webcam candidate
+                    fx, fy, fw_f, fh_f = face_res
+                    face_area_ratio = (fw_f * fh_f) / (cw * ch)
+                    if face_area_ratio > 0.05: # Face should be at least 5% of webcam area
+                        s_face = 1.0
+
+        # Веса: Лицо 0.50 (супер-бонус), Активность 0.25, Гистограмма 0.15, Прям-ть 0.10
+        score = (0.50 * s_face) + (0.25 * s_activity) + (0.15 * s_hist) + (0.10 * s_rect)
+
+        # Если лица нет, но активность высокая — тоже шанс (backwards compat)
+        if s_face == 0.0:
+             # Fallback scoring w/o face
+             score = (0.45 * s_activity) + (0.25 * s_hist) + (0.20 * s_rect) + (0.10 * s_side)
+        
+        scored.append({
+            "score": score,
+            "rect": cand["rect"],
+            "position": cand["position"],
+            "debug": {
+                "s_face": s_face,
+                "s_activity": round(s_activity, 4),
+                "raw_act": round(raw_activity, 5),
+                "s_hist": round(s_hist, 4),
+            },
+        })
+
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    best = scored[0]
+
+    # Если побеждает абсолютно статичный регион без лица — реджектим
+    if best["debug"]["raw_act"] < 0.002 and best["debug"]["s_face"] == 0.0 and len(frames) >= 2:
+         logging.debug("webcam_region: detected rect is static and no face, reject. debug=%s", best["debug"])
+         return None
+
+    if best["score"] < 0.12:
+        logging.debug(
+            "webcam_region: low score, best=%.4f rect=%s debug=%s",
+            best["score"], best["rect"], best["debug"],
         )
-        scores.append((score, statistics.mean(ratios), cand))
-
-    if not scores:
         return None
 
-    scores.sort(key=lambda item: item[0], reverse=True)
-    best_score, best_skin_ratio, best_cand = scores[0]
-    median_score = statistics.median([s[0] for s in scores])
-    # Отсекаем слабые/случайные попадания.
-    if best_skin_ratio < 0.015 or best_score < max(0.03, median_score * 1.15):
+    logging.info(
+        "webcam_region: detected rect=%s pos=%s score=%.4f debug=%s top3=%s",
+        best["rect"], best["position"], best["score"], best["debug"],
+        [(s["rect"], round(s["score"], 3)) for s in scored[:3]],
+    )
+    return best["rect"]
+
+
+def _heuristic_face_box_from_corners(source_w, source_h, frames, subject_side="auto"):
+    """
+    Резервная эвристика: находит webcam-оверлей через edge/activity/histogram,
+    и возвращает pseudo-face-box в его центре.
+    """
+    webcam_rect = _detect_webcam_region(source_w, source_h, frames, subject_side)
+    if webcam_rect is None:
         return None
 
-    x, y, w, h = best_cand
+    x, y, w, h = webcam_rect
     # Возвращаем pseudo-face-box внутри кандидата (центр webcam окна).
     fw = max(20, int(round(w * 0.4)))
     fh = max(20, int(round(h * 0.45)))
@@ -877,32 +1095,79 @@ def _run_facecam_top_split_layout(
     source_w, source_h, duration = _probe_video_metadata(input_clip)
     normalized_side = _normalize_subject_side(facecam_subject_side)
     detect_started = time.perf_counter()
-    detect_result = _detect_face_once(
-        input_clip,
-        max_probe_seconds=min(2.0, duration) if duration > 0 else 2.0,
-        sample_every_n_frames=3,
-        max_side=640,
-        subject_side=normalized_side,
-        return_probe_frames=True,
-        return_debug=True,
-    )
-    face_box, probe_frames, detect_debug = detect_result
-    detect_once_ms = int((time.perf_counter() - detect_started) * 1000)
 
-    fallback_reason = detect_debug.get("fallback_reason")
+    # Шаг 1: пробуем найти webcam-оверлей по границам/активности/гистограмме
+    #         (быстрее и надёжнее для стримов, чем детекция лиц)
+    probe_seconds = min(2.0, duration) if duration > 0 else 2.0
+    probe_indexed = _probe_frames_with_indices_from_start(
+        input_clip,
+        max_probe_seconds=probe_seconds,
+        sample_every_n_frames=3,
+        max_samples=24,
+    )
+    probe_frames = [frame for _, frame in probe_indexed]
+
+    # Pre-load detectors for region validation
+    detectors = _get_face_detectors()
+
+    webcam_rect = _detect_webcam_region(
+        source_w, source_h, probe_frames, detectors=detectors, subject_side=normalized_side,
+    )
+    face_box = None
     face_found_source = None
-    if face_box is not None:
-        face_found_source = detect_debug.get("best_source") or "haar"
-    else:
-        face_box = _heuristic_face_box_from_corners(
-            source_w,
-            source_h,
-            probe_frames,
-            subject_side=normalized_side,
+    fallback_reason = None
+    detect_debug = {
+        "subject_side": normalized_side,
+        "probe_frames": len(probe_frames),
+        "detector_counts": {},
+        "best_score": None,
+        "best_source": None,
+        "best_frame_idx": None,
+        "ranked_candidates": [],
+        "fallback_reason": None,
+    }
+
+    if webcam_rect is not None:
+        # Webcam найден — строим pseudo-face-box в его центре
+        wx, wy, ww, wh = webcam_rect
+        fw = max(20, int(round(ww * 0.4)))
+        fh = max(20, int(round(wh * 0.45)))
+        fx = wx + (ww - fw) // 2
+        fy = wy + int(round((wh - fh) * 0.35))
+        face_box = (fx, fy, fw, fh)
+        face_found_source = "webcam_region"
+        logging.info(
+            "webcam_region detected rect=%s pseudo_face_box=%s",
+            webcam_rect, face_box,
         )
+    else:
+        # Шаг 2: fallback на детекцию лиц (Haar cascades)
+        detect_result = _detect_face_once(
+            input_clip,
+            max_probe_seconds=probe_seconds,
+            sample_every_n_frames=3,
+            max_side=640,
+            subject_side=normalized_side,
+            return_probe_frames=True,
+            return_debug=True,
+        )
+        face_box, probe_frames, detect_debug = detect_result
+        fallback_reason = detect_debug.get("fallback_reason")
         if face_box is not None:
-            face_found_source = "heuristic"
-            fallback_reason = None
+            face_found_source = detect_debug.get("best_source") or "haar"
+        else:
+            # Шаг 3: heuristic fallback (тоже использует webcam_region внутри)
+            face_box = _heuristic_face_box_from_corners(
+                source_w,
+                source_h,
+                probe_frames,
+                subject_side=normalized_side,
+            )
+            if face_box is not None:
+                face_found_source = "heuristic"
+                fallback_reason = None
+
+    detect_once_ms = int((time.perf_counter() - detect_started) * 1000)
 
     top_height = max(2, min(target_height - 2, int(round(target_height * facecam_ratio))))
     bottom_height = target_height - top_height
@@ -911,30 +1176,43 @@ def _run_facecam_top_split_layout(
 
     top_aspect = target_width / top_height
     bottom_aspect = target_width / bottom_height
-    ranked_candidates = detect_debug.get("ranked_candidates") or []
-    candidate_boxes = []
-    if face_box:
-        candidate_boxes.append(tuple(face_box))
-    for item in ranked_candidates:
-        ranked_box = item.get("face_box")
-        if not ranked_box:
-            continue
-        ranked_box = tuple(ranked_box)
-        if ranked_box not in candidate_boxes:
-            candidate_boxes.append(ranked_box)
 
     selected_face_box = None
     camera_rect = None
-    for idx, candidate_box in enumerate(candidate_boxes[:2]):
-        candidate_camera_rect = _build_camera_crop(candidate_box, source_w, source_h, top_aspect)
-        if _camera_crop_sanity_ok(candidate_box, candidate_camera_rect):
-            selected_face_box = candidate_box
-            camera_rect = candidate_camera_rect
-            if idx > 0 and face_found_source:
-                face_found_source = f"{face_found_source}_candidate_{idx + 1}"
-            break
+
+    if webcam_rect is not None:
+        camera_rect = webcam_rect
+        selected_face_box = face_box
+        logging.info(
+            "webcam_region: exact webcam rect as camera_rect=%s",
+            camera_rect,
+        )
+    else:
+        # Face-box путь (Haar / heuristic) — стандартный crop вокруг лица
+        ranked_candidates = detect_debug.get("ranked_candidates") or []
+        candidate_boxes = []
+        if face_box:
+            candidate_boxes.append(tuple(face_box))
+        for item in ranked_candidates:
+            ranked_box = item.get("face_box")
+            if not ranked_box:
+                continue
+            ranked_box = tuple(ranked_box)
+            if ranked_box not in candidate_boxes:
+                candidate_boxes.append(ranked_box)
+
+        for idx, candidate_box in enumerate(candidate_boxes[:2]):
+            candidate_camera_rect = _build_camera_crop(candidate_box, source_w, source_h, top_aspect)
+            if _camera_crop_sanity_ok(candidate_box, candidate_camera_rect):
+                selected_face_box = candidate_box
+                camera_rect = candidate_camera_rect
+                if idx > 0 and face_found_source:
+                    face_found_source = f"{face_found_source}_candidate_{idx + 1}"
+                break
+
     if selected_face_box is None:
         fallback_reason = fallback_reason or "camera_crop_sanity_failed"
+
 
     logging.info(
         "face_detect_v2 subject_side=%s probe_frames=%s detector_counts=%s best_score=%s best_source=%s best_frame_idx=%s fallback_reason=%s detect_once_ms=%s",
@@ -958,10 +1236,13 @@ def _run_facecam_top_split_layout(
     content_rect = _build_content_crop(selected_face_box, source_w, source_h, bottom_aspect)
     filter_graph = _build_split_filter(camera_rect, content_rect, target_width, top_height, bottom_height)
     output_label = "[v]"
+    # На Windows используем basename + cwd, чтобы не экранировать путь в фильтре
+    subs_cwd = None
     if subs_file:
-        escaped_subs = _escape_ffmpeg_subtitles_path(subs_file)
+        subs_cwd = os.path.dirname(os.path.abspath(subs_file))
+        subs_name = os.path.basename(subs_file)
         output_label = "[vsub]"
-        filter_graph = f"{filter_graph};[v]subtitles={escaped_subs}{output_label}"
+        filter_graph = f"{filter_graph};[v]subtitles={subs_name}{output_label}"
 
     cmd = [
         "ffmpeg",
@@ -980,7 +1261,7 @@ def _run_facecam_top_split_layout(
         "-y",
     ]
     encode_started = time.perf_counter()
-    _run_ffmpeg(cmd, "Ошибка компоновки режима facecam_top_split")
+    _run_ffmpeg(cmd, "Ошибка компоновки режима facecam_top_split", cwd=subs_cwd)
     ffmpeg_encode_ms = int((time.perf_counter() - encode_started) * 1000)
     logging.info(
         "Facecam detect summary: detect_once_ms=%s face_found_source=%s ffmpeg_encode_ms=%s",
@@ -1069,7 +1350,10 @@ def burn_subtitles(input_clip, subs_file, output_dir=None):
     if not subs_file or not os.path.exists(subs_file):
         raise Exception(f"Файл субтитров не найден: {subs_file}")
 
-    subtitles_filter = f"subtitles={_escape_ffmpeg_subtitles_path(subs_file)}"
+    # На Windows используем basename + cwd, чтобы не экранировать путь в фильтре
+    subs_cwd = os.path.dirname(os.path.abspath(subs_file))
+    subs_name = os.path.basename(subs_file)
+    subtitles_filter = f"subtitles={subs_name}"
 
     # Прожиг субтитров через фильтр subtitles
     cmd = [
@@ -1081,7 +1365,7 @@ def burn_subtitles(input_clip, subs_file, output_dir=None):
         "-y"
     ]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=subs_cwd)
         if os.path.exists(output_file):
             return output_file
         else:

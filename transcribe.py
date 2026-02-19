@@ -10,8 +10,9 @@ from typing import Dict, Any, List
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-import whisper
-import torch
+# Lazy imports
+# import whisper
+# import torch
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,11 @@ WHISPER_MODELS = {
 
 def check_gpu_available():
     """Проверяет доступность GPU (CUDA)."""
-    return torch.cuda.is_available()
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
 
 
 def get_device():
@@ -73,6 +78,8 @@ def get_whisper_model(model_name, device):
     """
     global _CACHED_MODEL, _CACHED_MODEL_NAME
     
+    import whisper
+    
     if _CACHED_MODEL is not None and _CACHED_MODEL_NAME == model_name:
         return _CACHED_MODEL
     
@@ -80,6 +87,28 @@ def get_whisper_model(model_name, device):
     _CACHED_MODEL = whisper.load_model(model_name, device=device)
     _CACHED_MODEL_NAME = model_name
     return _CACHED_MODEL
+
+
+def unload_whisper_model():
+    """
+    Выгружает модель Whisper из памяти и очищает CUDA кэш.
+    """
+    global _CACHED_MODEL, _CACHED_MODEL_NAME
+    
+    if _CACHED_MODEL is not None:
+        logger.info("Выгрузка модели Whisper из памяти...")
+        del _CACHED_MODEL
+        _CACHED_MODEL = None
+        _CACHED_MODEL_NAME = None
+        
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+    except ImportError:
+        pass
 
 
 def _transcribe_with_model(wav_file, model_name="base", use_gpu=None, fp16=None, word_timestamps=False):
