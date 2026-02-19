@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+bot.log
+
+# Sensitive data
+.env
+user_settings.json
+*.key
+
+# Cache
+cache/
+transcription_cache/
+
+# Temporary files
+tmp/
+*.tmp
+
+# Video/audio files
+videos/
+*.mp4
+*.webm
+*.mkv
+*.wav
+*.avi
+*.mov
+
+# Runtime files
+.bot_pid
+chunk-Scenes.csv
+
+# Docker
+.docker/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,7 @@
+python-telegram-bot==22.5
+yt-dlp>=2025.09.26
+scenedetect[opencv]==0.6.2
+auto-editor==29.0.5
+openai-whisper
+python-dotenv
+cryptography==46.0.4

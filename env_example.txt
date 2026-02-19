@@ -1,0 +1,13 @@
+# Скопируйте этот файл в .env и заполните своими данными
+
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-3.5-turbo
+LLM_TEMPERATURE=0.7
+LLM_MAX_TOKENS=500
+
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=llama3
