@@ -44,6 +44,11 @@ class TestSettingsAndCallbacks(unittest.TestCase):
         self.assertIn("facecam_subject_side", settings.DEFAULT_SETTINGS)
         self.assertEqual(settings.DEFAULT_SETTINGS["facecam_subject_side"], "left")
 
+    def test_default_settings_has_facecam_detector_options(self):
+        self.assertEqual(settings.DEFAULT_SETTINGS["facecam_detector_backend"], "yolo_window_v1")
+        self.assertEqual(settings.DEFAULT_SETTINGS["facecam_fallback_mode"], "hard_side")
+        self.assertEqual(settings.DEFAULT_SETTINGS["facecam_anchor"], "edge_middle")
+
     def test_subtitle_position_cycles_bottom_center_top(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings_file = f"{tmp_dir}/user_settings.json"
@@ -125,6 +130,9 @@ class TestSettingsAndCallbacks(unittest.TestCase):
             with patch.object(settings, "SETTINGS_FILE", settings_file):
                 loaded = settings.load_settings(user_id)
                 self.assertEqual(loaded["facecam_subject_side"], "left")
+                self.assertEqual(loaded["facecam_detector_backend"], "yolo_window_v1")
+                self.assertEqual(loaded["facecam_fallback_mode"], "hard_side")
+                self.assertEqual(loaded["facecam_anchor"], "edge_middle")
 
 
 if __name__ == "__main__":

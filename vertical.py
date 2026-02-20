@@ -24,6 +24,14 @@ _DETECTOR_BONUS = {
     "haarcascade_profileface.xml": 0.008,
 }
 _SUPPORTED_FACECAM_SIDES = {"left", "right", "auto"}
+_SUPPORTED_FACECAM_BACKENDS = {"yolo_window_v1", "legacy"}
+_SUPPORTED_FACECAM_FALLBACK_MODES = {"hard_side", "standard"}
+_SUPPORTED_FACECAM_ANCHORS = {"edge_middle"}
+_FACECAM_MODEL_CACHE_DIR = os.path.join("cache", "models", "facecam")
+_FACECAM_MODEL_FILE = "yolov8n.pt"
+
+_YOLO_FACECAM_MODEL = None
+_YOLO_FACECAM_LOAD_FAILED = False
 
 
 def _run_ffmpeg(cmd, error_prefix, cwd=None):
@@ -230,6 +238,230 @@ def _normalize_subject_side(subject_side):
 
 def _detector_bonus(source_name):
     return _DETECTOR_BONUS.get(source_name, 0.0)
+
+
+def _normalize_facecam_backend(backend):
+    normalized = (backend or "").strip().lower()
+    if normalized in _SUPPORTED_FACECAM_BACKENDS:
+        return normalized
+    return "yolo_window_v1"
+
+
+def _normalize_facecam_fallback_mode(fallback_mode):
+    normalized = (fallback_mode or "").strip().lower()
+    if normalized in _SUPPORTED_FACECAM_FALLBACK_MODES:
+        return normalized
+    return "hard_side"
+
+
+def _normalize_facecam_anchor(anchor):
+    normalized = (anchor or "").strip().lower()
+    if normalized in _SUPPORTED_FACECAM_ANCHORS:
+        return normalized
+    return "edge_middle"
+
+
+def _normalize_detector_list(detectors):
+    if not isinstance(detectors, list):
+        return []
+    normalized = []
+    for item in detectors:
+        if isinstance(item, dict):
+            detector = item.get("detector")
+            if detector is not None and hasattr(detector, "detectMultiScale"):
+                normalized.append(item)
+            continue
+        if item is not None and hasattr(item, "detectMultiScale"):
+            normalized.append(item)
+    return normalized
+
+
+def _get_facecam_yolo_model(model_dir=None):
+    global _YOLO_FACECAM_MODEL, _YOLO_FACECAM_LOAD_FAILED
+
+    if _YOLO_FACECAM_MODEL is not None:
+        return _YOLO_FACECAM_MODEL
+    if _YOLO_FACECAM_LOAD_FAILED:
+        return None
+
+    try:
+        from ultralytics import YOLO
+    except Exception as exc:
+        _YOLO_FACECAM_LOAD_FAILED = True
+        logging.warning("ultralytics недоступен для facecam-detector (%s).", exc)
+        return None
+
+    cache_dir = os.path.abspath(model_dir or _FACECAM_MODEL_CACHE_DIR)
+    model_path = os.path.join(cache_dir, _FACECAM_MODEL_FILE)
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+    except Exception as exc:
+        _YOLO_FACECAM_LOAD_FAILED = True
+        logging.warning("Не удалось создать кеш-директорию для YOLO (%s).", exc)
+        return None
+
+    try:
+        _YOLO_FACECAM_MODEL = YOLO(model_path)
+        return _YOLO_FACECAM_MODEL
+    except Exception as exc:
+        _YOLO_FACECAM_LOAD_FAILED = True
+        logging.warning("Не удалось инициализировать YOLO facecam-detector (%s).", exc)
+        return None
+
+
+def _detect_person_boxes_with_yolo(frames, max_side=960):
+    """
+    Возвращает {probe_idx: [{"box": (x, y, w, h), "confidence": float}, ...]}.
+    Используется как мягкий сигнал для webcam-окна, а не как единственный источник.
+    """
+    if not frames:
+        return {}
+
+    yolo_model = _get_facecam_yolo_model()
+    if yolo_model is None:
+        return {}
+
+    detected = {}
+    try:
+        for probe_idx, frame in enumerate(frames):
+            if frame is None:
+                continue
+            resized, scale = _resize_for_detection(frame, max_side=max_side)
+            result_items = yolo_model.predict(
+                source=resized,
+                classes=[0],  # person
+                conf=0.25,
+                verbose=False,
+                imgsz=max(320, int(max_side)),
+            )
+            frame_boxes = []
+            for item in result_items:
+                boxes = getattr(item, "boxes", None)
+                if boxes is None:
+                    continue
+                xyxy = getattr(boxes, "xyxy", None)
+                confs = getattr(boxes, "conf", None)
+                if xyxy is None:
+                    continue
+
+                for idx in range(len(xyxy)):
+                    raw = xyxy[idx]
+                    coords = raw.tolist() if hasattr(raw, "tolist") else raw
+                    if not coords or len(coords) < 4:
+                        continue
+                    x1, y1, x2, y2 = [float(v) for v in coords[:4]]
+                    if scale > 0 and scale != 1.0:
+                        inv = 1.0 / scale
+                        x1 *= inv
+                        y1 *= inv
+                        x2 *= inv
+                        y2 *= inv
+                    x = int(round(x1))
+                    y = int(round(y1))
+                    w = int(round(x2 - x1))
+                    h = int(round(y2 - y1))
+                    box = _normalize_face_box(x, y, w, h, frame.shape[1], frame.shape[0])
+                    score = 0.0
+                    if confs is not None and idx < len(confs):
+                        score_raw = confs[idx]
+                        try:
+                            score = float(score_raw.item())
+                        except Exception:
+                            score = float(score_raw)
+                    frame_boxes.append({"box": box, "confidence": score})
+            detected[probe_idx] = frame_boxes
+    except Exception as exc:
+        logging.warning("YOLO facecam detect failed, continue without DNN (%s).", exc)
+        return {}
+    return detected
+
+
+def _intersection_area(box_a, box_b):
+    ax, ay, aw, ah = box_a
+    bx, by, bw, bh = box_b
+    ax2 = ax + aw
+    ay2 = ay + ah
+    bx2 = bx + bw
+    by2 = by + bh
+    inter_x1 = max(ax, bx)
+    inter_y1 = max(ay, by)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    return inter_w * inter_h
+
+
+def _person_overlap_ratio(candidate_box, person_boxes):
+    if not person_boxes:
+        return 0.0
+    cand_area = float(max(1, candidate_box[2] * candidate_box[3]))
+    best = 0.0
+    for person in person_boxes:
+        person_box = person.get("box") if isinstance(person, dict) else person
+        if not person_box:
+            continue
+        inter = _intersection_area(candidate_box, person_box)
+        if inter <= 0:
+            continue
+        overlap = inter / cand_area
+        if overlap > best:
+            best = overlap
+    return _clamp(best, 0.0, 1.0)
+
+
+def _pseudo_face_box_from_camera_rect(camera_rect):
+    x, y, w, h = camera_rect
+    fw = max(20, int(round(w * 0.40)))
+    fh = max(20, int(round(h * 0.45)))
+    fx = x + (w - fw) // 2
+    fy = y + int(round((h - fh) * 0.35))
+    return (fx, fy, fw, fh)
+
+
+def _camera_rect_sanity_ok(camera_rect, source_w, source_h):
+    if not camera_rect:
+        return False
+    x, y, w, h = camera_rect
+    if min(w, h) < 30:
+        return False
+    if x < 0 or y < 0:
+        return False
+    if (x + w) > source_w or (y + h) > source_h:
+        return False
+
+    area_ratio = (w * h) / float(max(1, source_w * source_h))
+    if area_ratio < 0.01 or area_ratio > 0.65:
+        return False
+
+    ratio = w / float(max(h, 1))
+    if ratio < 0.25 or ratio > 5.0:
+        return False
+    return True
+
+
+def _build_hard_side_camera_rect(source_w, source_h, top_aspect, subject_side="left", anchor="edge_middle"):
+    normalized_side = _normalize_subject_side(subject_side)
+    normalized_anchor = _normalize_facecam_anchor(anchor)
+    side = normalized_side if normalized_side in {"left", "right"} else "left"
+
+    crop_w_float = _clamp(source_w * 0.34, source_w * 0.22, source_w * 0.50)
+    crop_w = int(round(crop_w_float))
+    crop_h = int(round(crop_w / float(max(top_aspect, 0.001))))
+
+    if crop_h > source_h:
+        crop_h = int(round(source_h * 0.90))
+        crop_w = int(round(crop_h * float(max(top_aspect, 0.001))))
+
+    crop_w = max(2, min(source_w, crop_w))
+    crop_h = max(2, min(source_h, crop_h))
+
+    x = 0 if side == "left" else max(0, source_w - crop_w)
+    if normalized_anchor == "edge_middle":
+        y = max(0, min(source_h - crop_h, int(round((source_h - crop_h) / 2.0))))
+    else:
+        y = 0
+    return (x, y, crop_w, crop_h)
 
 
 def _box_iou(box_a, box_b):
@@ -896,170 +1128,322 @@ def _boundary_consistency(frames, x, y, w, h, thickness=3):
     return _clamp(consistency, 0.0, 1.0)
 
 
-def _detect_webcam_region(source_w, source_h, frames, detectors=None, subject_side="auto"):
-    """
-    Находит прямоугольный webcam-оверлей через контурный анализ:
-    Canny edges → findContours → фильтр по размеру/прямоугольности/углу.
-    Если передан detectors, проверяет наличие лица внутри кандидата (+score).
-    Возвращает (x, y, w, h) webcam-оверлея или None.
-    """
-    if cv2 is None or not frames:
-        return None
-    import numpy as np
+def _extract_rect_candidates_from_frame(frame, probe_idx):
+    if cv2 is None or frame is None:
+        return []
 
-    normalized_side = _normalize_subject_side(subject_side)
-    frame = frames[0]
     fh, fw = frame.shape[:2]
+    frame_area = float(max(1, fw * fh))
+    min_area = frame_area * 0.0025
+    max_area = frame_area * 0.45
+    candidates = []
 
-    frame_area = fw * fh
-    min_area = int(frame_area * 0.003)   # от 0.3% кадра
-    max_area = int(frame_area * 0.40)    # до 40% кадра
-
-    # Несколько порогов Canny для надёжности
-    all_rects = []
-    for low_t, high_t in ((30, 100), (50, 150), (80, 200)):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    for low_t, high_t in ((25, 80), (40, 120), (60, 180)):
         edges = cv2.Canny(blurred, low_t, high_t)
-
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         edges = cv2.dilate(edges, kernel, iterations=2)
         edges = cv2.erode(edges, kernel, iterations=1)
 
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
-            area = cv2.contourArea(cnt)
+            area = float(cv2.contourArea(cnt))
             if area < min_area or area > max_area:
                 continue
-
             peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-            if len(approx) < 4 or len(approx) > 6:
+            if peri <= 0:
+                continue
+            approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+            if len(approx) < 4 or len(approx) > 8:
                 continue
 
             bx, by, bw, bh = cv2.boundingRect(approx)
-            rect_area = bw * bh
-            if rect_area < min_area or bw < 30 or bh < 30:
+            if bw < 40 or bh < 40:
                 continue
-            rectangularity = area / float(rect_area)
-            if rectangularity < 0.60:
+            rect_area = float(bw * bh)
+            if rect_area <= 0:
                 continue
-            aspect = bw / float(bh)
-            if aspect < 0.3 or aspect > 5.0:
+            rectangularity = area / rect_area
+            if rectangularity < 0.55:
                 continue
-
-            # Должен касаться левого или правого края
-            margin_x = fw * 0.02
-            touches_left = bx <= margin_x
-            touches_right = (bx + bw) >= fw - margin_x
-
-            position = None
-            if touches_left:
-                position = "left_edge"
-            elif touches_right:
-                position = "right_edge"
-
-            # Если не касается ни левого, ни правого края — пропускаем
-            if position is None:
+            aspect = bw / float(max(bh, 1))
+            if aspect < 0.28 or aspect > 5.0:
                 continue
 
-            all_rects.append({
-                "rect": (bx, by, bw, bh),
-                "position": position,
-                "area": rect_area,
-                "rectangularity": rectangularity,
-            })
+            center_x = bx + (bw / 2.0)
+            center_x_norm = _clamp(center_x / float(max(fw, 1)), 0.0, 1.0)
+            if center_x_norm <= 0.35:
+                side = "left"
+            elif center_x_norm >= 0.65:
+                side = "right"
+            else:
+                continue
 
-    if not all_rects:
-        logging.debug("webcam_region: no rectangular contours found on left/right edges")
+            center_y = by + (bh / 2.0)
+            center_y_norm = _clamp(center_y / float(max(fh, 1)), 0.0, 1.0)
+            y_middle_score = max(0.0, 1.0 - (abs(center_y_norm - 0.5) / 0.5))
+            candidates.append(
+                {
+                    "probe_idx": probe_idx,
+                    "rect": (int(bx), int(by), int(bw), int(bh)),
+                    "rectangularity": float(rectangularity),
+                    "side": side,
+                    "y_middle": float(y_middle_score),
+                }
+            )
+    return candidates
+
+
+def _deduplicate_rect_candidates(candidates, iou_threshold=0.55):
+    if not candidates:
+        return []
+    scored = sorted(
+        candidates,
+        key=lambda item: (item.get("rectangularity", 0.0), item["rect"][2] * item["rect"][3]),
+        reverse=True,
+    )
+    deduped = []
+    for item in scored:
+        if any(_box_iou(item["rect"], existing["rect"]) >= iou_threshold for existing in deduped):
+            continue
+        deduped.append(item)
+    return deduped
+
+
+def _build_webcam_tracks(candidates):
+    if not candidates:
+        return []
+
+    tracks = []
+    ordered = sorted(candidates, key=lambda item: (item["probe_idx"], -(item["rect"][2] * item["rect"][3])))
+    for candidate in ordered:
+        best_track = None
+        best_iou = 0.0
+        for track in tracks:
+            if track["side"] != candidate["side"]:
+                continue
+            overlap = _box_iou(candidate["rect"], track["last_rect"])
+            if overlap >= 0.35 and overlap > best_iou:
+                best_iou = overlap
+                best_track = track
+        if best_track is None:
+            tracks.append(
+                {
+                    "side": candidate["side"],
+                    "members": [candidate],
+                    "last_rect": candidate["rect"],
+                }
+            )
+            continue
+        best_track["members"].append(candidate)
+        best_track["last_rect"] = _median_box([member["rect"] for member in best_track["members"]])
+
+    prepared = []
+    for track in tracks:
+        boxes = [member["rect"] for member in track["members"]]
+        aggregate = _median_box(boxes)
+        if not aggregate:
+            continue
+        prepared.append(
+            {
+                "side": track["side"],
+                "members": track["members"],
+                "rect": aggregate,
+                "frame_hits": sorted(set(member["probe_idx"] for member in track["members"])),
+                "mean_rectangularity": statistics.mean(
+                    member.get("rectangularity", 0.0) for member in track["members"]
+                ),
+                "mean_middle": statistics.mean(member.get("y_middle", 0.5) for member in track["members"]),
+            }
+        )
+    return prepared
+
+
+def _score_webcam_track(track, frames, source_w, source_h, subject_side, person_boxes_by_frame, detectors=None):
+    rect = track["rect"]
+    x, y, w, h = rect
+    total_frames = max(1, len(frames))
+    temporal_hits = len(track["frame_hits"]) / float(total_frames)
+    hist_score = _histogram_divergence(frames[0], x, y, w, h)
+
+    raw_activity = _temporal_activity_in_region(frames, x, y, w, h)
+    activity_score = _clamp(raw_activity / 0.045, 0.0, 1.0)
+    if raw_activity < 0.004:
+        activity_score = 0.0
+
+    boundary_score = _boundary_consistency(frames, x, y, w, h)
+    center_x = x + (w / 2.0)
+    side_score = _side_score(center_x, source_w, subject_side)
+    rect_score = _clamp(track["mean_rectangularity"], 0.0, 1.0)
+    middle_score = _clamp(track.get("mean_middle", 0.5), 0.0, 1.0)
+
+    person_hits = []
+    for probe_idx in track["frame_hits"]:
+        person_hits.append(_person_overlap_ratio(rect, person_boxes_by_frame.get(probe_idx, [])))
+    person_score = statistics.mean(person_hits) if person_hits else 0.0
+
+    safe_detectors = _normalize_detector_list(detectors)
+    face_score = 0.0
+    if safe_detectors:
+        fh, fw = frames[0].shape[:2]
+        crop = frames[0][max(0, y):min(fh, y + h), max(0, x):min(fw, x + w)]
+        if crop is not None and crop.size > 0:
+            face = _detect_largest_face(crop, safe_detectors)
+            if face:
+                fx, fy, fwf, fhf = face
+                face_ratio = (fwf * fhf) / float(max(1, w * h))
+                if face_ratio >= 0.02:
+                    face_score = _clamp(face_ratio / 0.20, 0.0, 1.0)
+
+    score = (
+        (0.23 * temporal_hits)
+        + (0.16 * boundary_score)
+        + (0.15 * activity_score)
+        + (0.10 * hist_score)
+        + (0.09 * rect_score)
+        + (0.08 * side_score)
+        + (0.06 * middle_score)
+        + (0.08 * person_score)
+        + (0.05 * face_score)
+    )
+    return {
+        "score": float(score),
+        "rect": rect,
+        "side": track["side"],
+        "temporal_hits": temporal_hits,
+        "debug": {
+            "s_temporal": round(temporal_hits, 4),
+            "s_boundary": round(boundary_score, 4),
+            "s_activity": round(activity_score, 4),
+            "raw_activity": round(raw_activity, 5),
+            "s_hist": round(hist_score, 4),
+            "s_rect": round(rect_score, 4),
+            "s_side": round(side_score, 4),
+            "s_middle": round(middle_score, 4),
+            "s_person": round(person_score, 4),
+            "s_face": round(face_score, 4),
+        },
+    }
+
+
+def _detect_webcam_region(
+    source_w,
+    source_h,
+    frames,
+    detectors=None,
+    subject_side="auto",
+    detector_backend="yolo_window_v1",
+    anchor="edge_middle",
+    min_score=0.30,
+    return_debug=False,
+):
+    """
+    Находит webcam-окно по мультикадровому трекингу прямоугольников.
+    Использует опциональный YOLO-сигнал (person внутри региона) и face-check.
+    """
+    debug = {
+        "detector_backend": _normalize_facecam_backend(detector_backend),
+        "anchor": _normalize_facecam_anchor(anchor),
+        "candidate_count": 0,
+        "track_count": 0,
+        "best_score": None,
+        "best_rect": None,
+        "preferred_side": "left",
+        "fallback_reason": None,
+        "top3": [],
+    }
+    if cv2 is None or not frames:
+        debug["fallback_reason"] = "no_frames_or_cv2"
+        if return_debug:
+            return None, debug
         return None
 
-    # Убираем дубликаты (IoU > 0.5)
-    unique = []
-    for r in all_rects:
-        is_dup = False
-        for u in unique:
-            iou = _box_iou(r["rect"], u["rect"])
-            if iou > 0.5:
-                is_dup = True
-                if r["area"] > u["area"]:
-                    unique.remove(u)
-                    unique.append(r)
-                break
-        if not is_dup:
-            unique.append(r)
+    normalized_side = _normalize_subject_side(subject_side)
+    normalized_backend = _normalize_facecam_backend(detector_backend)
+    safe_detectors = _normalize_detector_list(detectors)
 
-    # Скоринг
+    all_candidates = []
+    for probe_idx, frame in enumerate(frames):
+        frame_candidates = _extract_rect_candidates_from_frame(frame, probe_idx)
+        frame_candidates = _deduplicate_rect_candidates(frame_candidates)
+        all_candidates.extend(frame_candidates)
+
+    debug["candidate_count"] = len(all_candidates)
+    if not all_candidates:
+        debug["fallback_reason"] = "no_rect_candidates"
+        if return_debug:
+            return None, debug
+        return None
+
+    tracks = _build_webcam_tracks(all_candidates)
+    debug["track_count"] = len(tracks)
+    if not tracks:
+        debug["fallback_reason"] = "no_tracks"
+        if return_debug:
+            return None, debug
+        return None
+
+    person_boxes_by_frame = {}
+    if normalized_backend == "yolo_window_v1":
+        person_boxes_by_frame = _detect_person_boxes_with_yolo(frames)
+
     scored = []
-    for cand in unique:
-        cx, cy, cw, ch = cand["rect"]
-        s_hist = _histogram_divergence(frames[0], cx, cy, cw, ch)
-        
-        # Активность (движение)
-        raw_activity = _temporal_activity_in_region(frames, cx, cy, cw, ch)
-        s_activity = _clamp(raw_activity / 0.05, 0.0, 1.0) if len(frames) >= 2 else 0.5
-        if raw_activity < 0.005:
-            s_activity = 0.0
-
-        center_x = cx + cw / 2.0
-        s_side = _side_score(center_x, source_w, normalized_side)
-        s_rect = cand["rectangularity"]
-
-        # Face check inside the candidate
-        s_face = 0.0
-        if detectors:
-            # Crop to candidate
-            crop = frame[max(0, cy):min(fh, cy + ch), max(0, cx):min(fw, cx + cw)]
-            if crop.size > 0:
-                face_res = _detect_largest_face(crop, detectors)
-                if face_res:
-                    # Found a face inside the webcam candidate!
-                    # Check if face size is reasonable relative to webcam candidate
-                    fx, fy, fw_f, fh_f = face_res
-                    face_area_ratio = (fw_f * fh_f) / (cw * ch)
-                    if face_area_ratio > 0.05: # Face should be at least 5% of webcam area
-                        s_face = 1.0
-
-        # Веса: Лицо 0.50 (супер-бонус), Активность 0.25, Гистограмма 0.15, Прям-ть 0.10
-        score = (0.50 * s_face) + (0.25 * s_activity) + (0.15 * s_hist) + (0.10 * s_rect)
-
-        # Если лица нет, но активность высокая — тоже шанс (backwards compat)
-        if s_face == 0.0:
-             # Fallback scoring w/o face
-             score = (0.45 * s_activity) + (0.25 * s_hist) + (0.20 * s_rect) + (0.10 * s_side)
-        
-        scored.append({
-            "score": score,
-            "rect": cand["rect"],
-            "position": cand["position"],
-            "debug": {
-                "s_face": s_face,
-                "s_activity": round(s_activity, 4),
-                "raw_act": round(raw_activity, 5),
-                "s_hist": round(s_hist, 4),
-            },
-        })
-
-    scored.sort(key=lambda item: item["score"], reverse=True)
-    best = scored[0]
-
-    # Если побеждает абсолютно статичный регион без лица — реджектим
-    if best["debug"]["raw_act"] < 0.002 and best["debug"]["s_face"] == 0.0 and len(frames) >= 2:
-         logging.debug("webcam_region: detected rect is static and no face, reject. debug=%s", best["debug"])
-         return None
-
-    if best["score"] < 0.12:
-        logging.debug(
-            "webcam_region: low score, best=%.4f rect=%s debug=%s",
-            best["score"], best["rect"], best["debug"],
+    side_votes = {"left": 0.0, "right": 0.0}
+    for track in tracks:
+        ranked = _score_webcam_track(
+            track,
+            frames,
+            source_w=source_w,
+            source_h=source_h,
+            subject_side=normalized_side,
+            person_boxes_by_frame=person_boxes_by_frame,
+            detectors=safe_detectors,
         )
+        if normalized_side in {"left", "right"} and ranked["side"] == normalized_side:
+            ranked["score"] += 0.02
+        side_votes[ranked["side"]] += max(0.0, ranked["score"])
+        scored.append(ranked)
+
+    debug["preferred_side"] = "left" if side_votes["left"] >= side_votes["right"] else "right"
+    scored.sort(key=lambda item: (item["score"], item["temporal_hits"]), reverse=True)
+    best = scored[0]
+    debug["best_score"] = round(float(best["score"]), 4)
+    debug["best_rect"] = best["rect"]
+    debug["top3"] = [
+        {
+            "rect": item["rect"],
+            "side": item["side"],
+            "score": round(float(item["score"]), 4),
+            "temporal_hits": round(float(item["temporal_hits"]), 4),
+            "debug": item["debug"],
+        }
+        for item in scored[:3]
+    ]
+    debug["preferred_side"] = best["side"] if normalized_side == "auto" else normalized_side
+
+    if float(best["score"]) < float(min_score):
+        debug["fallback_reason"] = "low_score"
+        if return_debug:
+            return None, debug
+        return None
+    if not _camera_rect_sanity_ok(best["rect"], source_w, source_h):
+        debug["fallback_reason"] = "camera_rect_sanity_failed"
+        if return_debug:
+            return None, debug
         return None
 
     logging.info(
-        "webcam_region: detected rect=%s pos=%s score=%.4f debug=%s top3=%s",
-        best["rect"], best["position"], best["score"], best["debug"],
-        [(s["rect"], round(s["score"], 3)) for s in scored[:3]],
+        "webcam_region_v3 backend=%s candidates=%s tracks=%s best_rect=%s best_score=%.4f top3=%s",
+        normalized_backend,
+        debug["candidate_count"],
+        debug["track_count"],
+        best["rect"],
+        best["score"],
+        [(item["rect"], round(item["score"], 3)) for item in scored[:3]],
     )
+    if return_debug:
+        return best["rect"], debug
     return best["rect"]
 
 
@@ -1068,17 +1452,60 @@ def _heuristic_face_box_from_corners(source_w, source_h, frames, subject_side="a
     Резервная эвристика: находит webcam-оверлей через edge/activity/histogram,
     и возвращает pseudo-face-box в его центре.
     """
-    webcam_rect = _detect_webcam_region(source_w, source_h, frames, subject_side)
+    webcam_rect = _detect_webcam_region(
+        source_w,
+        source_h,
+        frames,
+        detectors=None,
+        subject_side=subject_side,
+    )
     if webcam_rect is None:
         return None
 
-    x, y, w, h = webcam_rect
-    # Возвращаем pseudo-face-box внутри кандидата (центр webcam окна).
-    fw = max(20, int(round(w * 0.4)))
-    fh = max(20, int(round(h * 0.45)))
-    fx = x + (w - fw) // 2
-    fy = y + int(round((h - fh) * 0.35))
-    return (fx, fy, fw, fh)
+    return _pseudo_face_box_from_camera_rect(webcam_rect)
+
+
+def _save_facecam_debug_frames(probe_indexed, camera_rect, output_file, max_frames=5):
+    """
+    Сохраняет несколько кадров с рамкой camera_rect, если включен env FACECAM_SAVE_DEBUG_FRAMES=1.
+    """
+    if cv2 is None:
+        return []
+    if not probe_indexed or not camera_rect:
+        return []
+    if os.getenv("FACECAM_SAVE_DEBUG_FRAMES", "0").strip() != "1":
+        return []
+
+    x, y, w, h = camera_rect
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(output_file)), "facecam_debug")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception:
+        return []
+
+    saved = []
+    for frame_idx, (source_frame_idx, frame) in enumerate(probe_indexed[: max(1, int(max_frames))]):
+        if frame is None:
+            continue
+        canvas = frame.copy()
+        cv2.rectangle(canvas, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(
+            canvas,
+            f"camera_rect={x},{y},{w},{h}",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        filename = os.path.join(out_dir, f"{os.path.basename(output_file)}_probe_{frame_idx}_{source_frame_idx}.jpg")
+        try:
+            if cv2.imwrite(filename, canvas):
+                saved.append(filename)
+        except Exception:
+            continue
+    return saved
 
 
 def _run_facecam_top_split_layout(
@@ -1088,150 +1515,133 @@ def _run_facecam_top_split_layout(
     target_height,
     facecam_ratio=1 / 3,
     facecam_subject_side="left",
+    facecam_detector_backend="yolo_window_v1",
+    facecam_fallback_mode="hard_side",
+    facecam_anchor="edge_middle",
     subs_file=None,
     encode_preset="veryfast",
 ):
     """Режим: верх 1/3 facecam, низ 2/3 игровой контент."""
     source_w, source_h, duration = _probe_video_metadata(input_clip)
     normalized_side = _normalize_subject_side(facecam_subject_side)
+    normalized_backend = _normalize_facecam_backend(facecam_detector_backend)
+    normalized_fallback_mode = _normalize_facecam_fallback_mode(facecam_fallback_mode)
+    normalized_anchor = _normalize_facecam_anchor(facecam_anchor)
     detect_started = time.perf_counter()
 
-    # Шаг 1: пробуем найти webcam-оверлей по границам/активности/гистограмме
-    #         (быстрее и надёжнее для стримов, чем детекция лиц)
-    probe_seconds = min(2.0, duration) if duration > 0 else 2.0
+    probe_seconds = min(6.0, duration) if duration > 0 else 6.0
     probe_indexed = _probe_frames_with_indices_from_start(
         input_clip,
         max_probe_seconds=probe_seconds,
         sample_every_n_frames=3,
-        max_samples=24,
+        max_samples=36,
     )
     probe_frames = [frame for _, frame in probe_indexed]
 
-    # Pre-load detectors for region validation
     detectors = _get_face_detectors()
-
-    webcam_rect = _detect_webcam_region(
-        source_w, source_h, probe_frames, detectors=detectors, subject_side=normalized_side,
-    )
-    face_box = None
-    face_found_source = None
-    fallback_reason = None
-    detect_debug = {
-        "subject_side": normalized_side,
-        "probe_frames": len(probe_frames),
-        "detector_counts": {},
-        "best_score": None,
-        "best_source": None,
-        "best_frame_idx": None,
-        "ranked_candidates": [],
-        "fallback_reason": None,
-    }
-
-    if webcam_rect is not None:
-        # Webcam найден — строим pseudo-face-box в его центре
-        wx, wy, ww, wh = webcam_rect
-        fw = max(20, int(round(ww * 0.4)))
-        fh = max(20, int(round(wh * 0.45)))
-        fx = wx + (ww - fw) // 2
-        fy = wy + int(round((wh - fh) * 0.35))
-        face_box = (fx, fy, fw, fh)
-        face_found_source = "webcam_region"
-        logging.info(
-            "webcam_region detected rect=%s pseudo_face_box=%s",
-            webcam_rect, face_box,
-        )
-    else:
-        # Шаг 2: fallback на детекцию лиц (Haar cascades)
-        detect_result = _detect_face_once(
-            input_clip,
-            max_probe_seconds=probe_seconds,
-            sample_every_n_frames=3,
-            max_side=640,
-            subject_side=normalized_side,
-            return_probe_frames=True,
-            return_debug=True,
-        )
-        face_box, probe_frames, detect_debug = detect_result
-        fallback_reason = detect_debug.get("fallback_reason")
-        if face_box is not None:
-            face_found_source = detect_debug.get("best_source") or "haar"
-        else:
-            # Шаг 3: heuristic fallback (тоже использует webcam_region внутри)
-            face_box = _heuristic_face_box_from_corners(
-                source_w,
-                source_h,
-                probe_frames,
-                subject_side=normalized_side,
-            )
-            if face_box is not None:
-                face_found_source = "heuristic"
-                fallback_reason = None
-
-    detect_once_ms = int((time.perf_counter() - detect_started) * 1000)
-
     top_height = max(2, min(target_height - 2, int(round(target_height * facecam_ratio))))
     bottom_height = target_height - top_height
     if bottom_height <= 1:
         raise Exception("Некорректные размеры верхнего/нижнего блока.")
-
     top_aspect = target_width / top_height
     bottom_aspect = target_width / bottom_height
 
-    selected_face_box = None
-    camera_rect = None
-
-    if webcam_rect is not None:
-        camera_rect = webcam_rect
-        selected_face_box = face_box
-        logging.info(
-            "webcam_region: exact webcam rect as camera_rect=%s",
-            camera_rect,
-        )
-    else:
-        # Face-box путь (Haar / heuristic) — стандартный crop вокруг лица
-        ranked_candidates = detect_debug.get("ranked_candidates") or []
-        candidate_boxes = []
-        if face_box:
-            candidate_boxes.append(tuple(face_box))
-        for item in ranked_candidates:
-            ranked_box = item.get("face_box")
-            if not ranked_box:
-                continue
-            ranked_box = tuple(ranked_box)
-            if ranked_box not in candidate_boxes:
-                candidate_boxes.append(ranked_box)
-
-        for idx, candidate_box in enumerate(candidate_boxes[:2]):
-            candidate_camera_rect = _build_camera_crop(candidate_box, source_w, source_h, top_aspect)
-            if _camera_crop_sanity_ok(candidate_box, candidate_camera_rect):
-                selected_face_box = candidate_box
-                camera_rect = candidate_camera_rect
-                if idx > 0 and face_found_source:
-                    face_found_source = f"{face_found_source}_candidate_{idx + 1}"
-                break
-
-    if selected_face_box is None:
-        fallback_reason = fallback_reason or "camera_crop_sanity_failed"
-
-
-    logging.info(
-        "face_detect_v2 subject_side=%s probe_frames=%s detector_counts=%s best_score=%s best_source=%s best_frame_idx=%s fallback_reason=%s detect_once_ms=%s",
-        normalized_side,
-        len(probe_frames),
-        detect_debug.get("detector_counts") or {},
-        detect_debug.get("best_score"),
-        detect_debug.get("best_source"),
-        detect_debug.get("best_frame_idx"),
-        fallback_reason,
-        detect_once_ms,
+    webcam_rect, webcam_debug = _detect_webcam_region(
+        source_w,
+        source_h,
+        probe_frames,
+        detectors=detectors,
+        subject_side=normalized_side,
+        detector_backend=normalized_backend,
+        anchor=normalized_anchor,
+        min_score=0.30,
+        return_debug=True,
     )
 
-    if selected_face_box is None:
-        logging.info(
-            "Facecam detect summary: detect_once_ms=%s face_found_source=fallback_standard ffmpeg_encode_ms=0",
-            detect_once_ms,
-        )
-        raise Exception("Не удалось обнаружить лицо для facecam-режима.")
+    detect_once_ms = int((time.perf_counter() - detect_started) * 1000)
+    selected_face_box = None
+    camera_rect = None
+    face_found_source = None
+    fallback_reason = webcam_debug.get("fallback_reason")
+    resolved_side = webcam_debug.get("preferred_side") or "left"
+
+    if webcam_rect is not None and _camera_rect_sanity_ok(webcam_rect, source_w, source_h):
+        camera_rect = webcam_rect
+        selected_face_box = _pseudo_face_box_from_camera_rect(webcam_rect)
+        face_found_source = f"webcam_region_{normalized_backend}"
+        fallback_reason = None
+        resolved_side = normalized_side if normalized_side in {"left", "right"} else (webcam_debug.get("preferred_side") or "left")
+    else:
+        if webcam_rect is not None and not _camera_rect_sanity_ok(webcam_rect, source_w, source_h):
+            fallback_reason = "camera_rect_sanity_failed"
+        if normalized_fallback_mode == "hard_side":
+            if normalized_side in {"left", "right"}:
+                resolved_side = normalized_side
+            camera_rect = _build_hard_side_camera_rect(
+                source_w,
+                source_h,
+                top_aspect,
+                subject_side=resolved_side,
+                anchor=normalized_anchor,
+            )
+            if not _camera_rect_sanity_ok(camera_rect, source_w, source_h):
+                raise Exception("Hard-side fallback построил некорректный camera_rect.")
+            selected_face_box = _pseudo_face_box_from_camera_rect(camera_rect)
+            face_found_source = f"hard_side_{resolved_side}"
+        else:
+            # Совместимый путь: fallback на face detection.
+            detect_result = _detect_face_once(
+                input_clip,
+                max_probe_seconds=min(2.0, probe_seconds),
+                sample_every_n_frames=3,
+                max_side=640,
+                subject_side=normalized_side,
+                return_probe_frames=True,
+                return_debug=True,
+            )
+            face_box, probe_frames, detect_debug = detect_result
+            candidate_boxes = []
+            if face_box:
+                candidate_boxes.append(tuple(face_box))
+            for item in detect_debug.get("ranked_candidates") or []:
+                ranked_box = item.get("face_box")
+                if ranked_box:
+                    ranked_box = tuple(ranked_box)
+                    if ranked_box not in candidate_boxes:
+                        candidate_boxes.append(ranked_box)
+            for candidate_box in candidate_boxes[:2]:
+                candidate_camera_rect = _build_camera_crop(candidate_box, source_w, source_h, top_aspect)
+                if _camera_crop_sanity_ok(candidate_box, candidate_camera_rect):
+                    selected_face_box = candidate_box
+                    camera_rect = candidate_camera_rect
+                    face_found_source = "legacy_face_fallback"
+                    fallback_reason = None
+                    break
+            if selected_face_box is None:
+                fallback_reason = fallback_reason or detect_debug.get("fallback_reason") or "legacy_face_fallback_failed"
+
+    if selected_face_box is None or camera_rect is None:
+        raise Exception("Не удалось получить валидный camera_rect для facecam-режима.")
+    if not _camera_rect_sanity_ok(camera_rect, source_w, source_h):
+        raise Exception("Итоговый camera_rect не прошел sanity-check.")
+
+    _save_facecam_debug_frames(probe_indexed, camera_rect, output_file, max_frames=5)
+    logging.info(
+        "facecam_detect_v3 backend=%s fallback_mode=%s anchor=%s subject_side=%s preferred_side=%s probe_frames=%s candidate_count=%s track_count=%s best_score=%s fallback_reason=%s final_source=%s final_rect=%s detect_once_ms=%s",
+        normalized_backend,
+        normalized_fallback_mode,
+        normalized_anchor,
+        normalized_side,
+        resolved_side,
+        len(probe_frames),
+        webcam_debug.get("candidate_count"),
+        webcam_debug.get("track_count"),
+        webcam_debug.get("best_score"),
+        fallback_reason,
+        face_found_source,
+        camera_rect,
+        detect_once_ms,
+    )
 
     content_rect = _build_content_crop(selected_face_box, source_w, source_h, bottom_aspect)
     filter_graph = _build_split_filter(camera_rect, content_rect, target_width, top_height, bottom_height)
@@ -1279,6 +1689,9 @@ def convert_to_vertical(
     layout_mode="standard",
     facecam_ratio=1 / 3,
     facecam_subject_side="left",
+    facecam_detector_backend="yolo_window_v1",
+    facecam_fallback_mode="hard_side",
+    facecam_anchor="edge_middle",
     subs_file=None,
     encode_preset="veryfast",
 ):
@@ -1306,6 +1719,9 @@ def convert_to_vertical(
                     target_height,
                     facecam_ratio=facecam_ratio,
                     facecam_subject_side=facecam_subject_side,
+                    facecam_detector_backend=facecam_detector_backend,
+                    facecam_fallback_mode=facecam_fallback_mode,
+                    facecam_anchor=facecam_anchor,
                     subs_file=subs_file,
                     encode_preset=encode_preset,
                 )

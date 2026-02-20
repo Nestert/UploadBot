@@ -160,22 +160,18 @@ class TestVerticalLayouts(unittest.TestCase):
         def fake_run_ffmpeg(cmd, *_args, **_kwargs):
             captured["cmd"] = cmd
 
-        detect_debug = {
-            "subject_side": "left",
-            "probe_frames": 2,
-            "detector_counts": {"haarcascade_frontalface_alt2.xml": 2},
-            "best_score": 0.88,
-            "best_source": "haarcascade_frontalface_alt2.xml",
-            "best_frame_idx": 12,
-            "ranked_candidates": [{"face_box": (50, 50, 100, 100), "score": 0.88}],
+        webcam_debug = {
+            "candidate_count": 3,
+            "track_count": 1,
+            "best_score": 0.82,
+            "preferred_side": "left",
             "fallback_reason": None,
         }
 
         with patch("vertical._probe_video_metadata", return_value=(1920, 1080, 60.0)), \
-             patch("vertical._detect_face_once", return_value=((50, 50, 100, 100), [object()], detect_debug)), \
-             patch("vertical._heuristic_face_box_from_corners") as heuristic_mock, \
-             patch("vertical._build_camera_crop", return_value=(0, 0, 640, 380)) as cam_crop_mock, \
-             patch("vertical._camera_crop_sanity_ok", return_value=True), \
+             patch("vertical._probe_frames_with_indices_from_start", return_value=[(0, object()), (3, object())]), \
+             patch("vertical._detect_webcam_region", return_value=((0, 10, 620, 360), webcam_debug)), \
+             patch("vertical._save_facecam_debug_frames"), \
              patch("vertical._build_content_crop", return_value=(100, 0, 800, 950)) as content_crop_mock, \
              patch("vertical._run_ffmpeg", side_effect=fake_run_ffmpeg):
             vertical._run_facecam_top_split_layout(
@@ -185,8 +181,6 @@ class TestVerticalLayouts(unittest.TestCase):
                 1920,
             )
 
-        heuristic_mock.assert_not_called()
-        cam_crop_mock.assert_called_once()
         content_crop_mock.assert_called_once()
         self.assertIn("-filter_complex", captured["cmd"])
         filter_graph = captured["cmd"][captured["cmd"].index("-filter_complex") + 1]
@@ -194,37 +188,33 @@ class TestVerticalLayouts(unittest.TestCase):
         self.assertIn("scale=1080:1280", filter_graph)
         self.assertIn("vstack=inputs=2", filter_graph)
 
-    def test_facecam_layout_tries_second_candidate_if_first_fails_sanity(self):
-        detect_debug = {
-            "subject_side": "left",
-            "probe_frames": 2,
-            "detector_counts": {"haarcascade_frontalface_alt2.xml": 2},
-            "best_score": 0.9,
-            "best_source": "haarcascade_frontalface_alt2.xml",
-            "best_frame_idx": 8,
-            "ranked_candidates": [
-                {"face_box": (1000, 80, 120, 120), "score": 0.9},
-                {"face_box": (520, 260, 420, 420), "score": 0.82},
-            ],
-            "fallback_reason": None,
-        }
-        cam_rects = [(900, 20, 760, 500), (380, 140, 900, 620)]
+    def test_facecam_layout_hard_side_fallback_is_used_when_detection_missing(self):
+        captured = {}
+
+        def fake_run_ffmpeg(cmd, *_args, **_kwargs):
+            captured["cmd"] = cmd
 
         with patch("vertical._probe_video_metadata", return_value=(1920, 1080, 50.0)), \
-             patch("vertical._detect_face_once", return_value=((1000, 80, 120, 120), [object()], detect_debug)), \
-             patch("vertical._build_camera_crop", side_effect=cam_rects) as cam_crop_mock, \
-             patch("vertical._camera_crop_sanity_ok", side_effect=[False, True]), \
-             patch("vertical._build_content_crop", return_value=(100, 0, 800, 950)) as content_crop_mock, \
-             patch("vertical._run_ffmpeg"):
+             patch("vertical._probe_frames_with_indices_from_start", return_value=[(0, object()), (3, object())]), \
+             patch(
+                 "vertical._detect_webcam_region",
+                 return_value=(None, {"fallback_reason": "low_score", "preferred_side": "right", "candidate_count": 0, "track_count": 0, "best_score": None}),
+             ), \
+             patch("vertical._save_facecam_debug_frames"), \
+             patch("vertical._build_content_crop", return_value=(100, 0, 800, 950)), \
+             patch("vertical._run_ffmpeg", side_effect=fake_run_ffmpeg):
             vertical._run_facecam_top_split_layout(
                 "input.mp4",
                 "output.mp4",
                 1080,
                 1920,
+                facecam_subject_side="auto",
+                facecam_fallback_mode="hard_side",
             )
 
-        self.assertEqual(cam_crop_mock.call_count, 2)
-        content_crop_mock.assert_called_once_with((520, 260, 420, 420), 1920, 1080, 1080 / 1280)
+        self.assertIn("-filter_complex", captured["cmd"])
+        filter_graph = captured["cmd"][captured["cmd"].index("-filter_complex") + 1]
+        self.assertIn("crop=653", filter_graph)
 
     def test_detect_webcam_region_finds_corner_overlay(self):
         """Webcam с чёткими границами и другим цветом должен обнаруживаться."""
@@ -319,6 +309,88 @@ class TestVerticalLayouts(unittest.TestCase):
         self.assertIsNotNone(result)
         # Check that detectMultiScale was called
         self.assertTrue(mock_detector.detectMultiScale.called)
+
+    def test_heuristic_face_box_calls_detect_with_named_subject_side(self):
+        with patch("vertical._detect_webcam_region", return_value=(10, 20, 300, 200)) as detect_mock:
+            face_box = vertical._heuristic_face_box_from_corners(1920, 1080, [object()], subject_side="right")
+
+        self.assertIsNotNone(face_box)
+        self.assertEqual(face_box[0], 100)
+        self.assertEqual(face_box[1], 58)
+        self.assertEqual(face_box[2], 120)
+        self.assertEqual(face_box[3], 90)
+        self.assertEqual(detect_mock.call_count, 1)
+        self.assertEqual(detect_mock.call_args.kwargs["subject_side"], "right")
+        self.assertIsNone(detect_mock.call_args.kwargs["detectors"])
+
+    def test_detect_webcam_region_finds_overlay_with_horizontal_offset(self):
+        import numpy as np
+        import cv2
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[:, :, :] = 35
+        cam_x, cam_y, cam_w, cam_h = 120, 380, 380, 240  # ~6% отступ от левого края
+        frame[cam_y:cam_y + cam_h, cam_x:cam_x + cam_w, :] = 205
+        cv2.rectangle(frame, (cam_x, cam_y), (cam_x + cam_w, cam_y + cam_h), (255, 255, 255), 2)
+        frame2 = frame.copy()
+        frame2[cam_y + 40:cam_y + 130, cam_x + 30:cam_x + 140, :] = 175
+        frames = [frame, frame2, frame]
+
+        result = vertical._detect_webcam_region(1920, 1080, frames, subject_side="left")
+        self.assertIsNotNone(result)
+        rx, _ry, _rw, _rh = result
+        self.assertGreaterEqual(rx, 60)
+        self.assertLessEqual(rx, 180)
+
+    def test_detect_webcam_region_prefers_middle_y_when_side_same(self):
+        import numpy as np
+        import cv2
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[:, :, :] = 30
+        # Кандидат A: верхний левый
+        frame[40:240, 40:360, :] = 200
+        cv2.rectangle(frame, (40, 40), (360, 240), (255, 255, 255), 2)
+        # Кандидат B: левый по центру (должен победить)
+        cam_y = 430
+        frame[cam_y:cam_y + 230, 60:390, :] = 205
+        cv2.rectangle(frame, (60, cam_y), (390, cam_y + 230), (255, 255, 255), 2)
+        frame2 = frame.copy()
+        frame2[cam_y + 40:cam_y + 130, 100:220, :] = 175
+        frames = [frame, frame2, frame]
+
+        result = vertical._detect_webcam_region(1920, 1080, frames, subject_side="left")
+        self.assertIsNotNone(result)
+        _rx, ry, _rw, _rh = result
+        self.assertGreater(ry, 320)
+        self.assertLess(ry, 620)
+
+    def test_detect_webcam_region_rejects_transient_false_rect(self):
+        import numpy as np
+        import cv2
+
+        base = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        base[:, :, :] = 28
+        # Настоящая webcam-подобная область слева по центру (устойчивая)
+        stable_x, stable_y, stable_w, stable_h = 80, 420, 360, 230
+
+        f1 = base.copy()
+        f2 = base.copy()
+        f3 = base.copy()
+        for f in (f1, f2, f3):
+            f[stable_y:stable_y + stable_h, stable_x:stable_x + stable_w, :] = 200
+            cv2.rectangle(f, (stable_x, stable_y), (stable_x + stable_w, stable_y + stable_h), (255, 255, 255), 2)
+        # Ложный крупный прямоугольник только на первом кадре справа
+        f1[140:600, 1300:1840, :] = 210
+        cv2.rectangle(f1, (1300, 140), (1840, 600), (255, 255, 255), 2)
+        # Движение внутри устойчивой области
+        f2[stable_y + 60:stable_y + 150, stable_x + 60:stable_x + 180, :] = 170
+        f3[stable_y + 70:stable_y + 170, stable_x + 70:stable_x + 190, :] = 160
+
+        result = vertical._detect_webcam_region(1920, 1080, [f1, f2, f3], subject_side="left")
+        self.assertIsNotNone(result)
+        rx, _ry, _rw, _rh = result
+        self.assertLess(rx, 400, "должен победить устойчивый регион слева, а не transient справа")
 
 
 if __name__ == "__main__":

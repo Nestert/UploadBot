@@ -5,3 +5,4 @@ auto-editor==29.0.5
 openai-whisper
 python-dotenv
 cryptography==46.0.4
+ultralytics==8.3.181

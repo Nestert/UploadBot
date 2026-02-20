@@ -31,6 +31,9 @@ class TestProcessingPipeline(unittest.IsolatedAsyncioTestCase):
             "subtitle_position": "bottom",
             "vertical_layout_mode": "facecam_top_split",
             "facecam_subject_side": "right",
+            "facecam_detector_backend": "yolo_window_v1",
+            "facecam_fallback_mode": "hard_side",
+            "facecam_anchor": "edge_middle",
             "hashtag_count": 7,
             "whisper_model": "base",
             "use_gpu": False
@@ -90,6 +93,9 @@ class TestProcessingPipeline(unittest.IsolatedAsyncioTestCase):
         for call in convert_mock.call_args_list:
             self.assertEqual(call.kwargs.get("layout_mode"), "facecam_top_split")
             self.assertEqual(call.kwargs.get("facecam_subject_side"), "right")
+            self.assertEqual(call.kwargs.get("facecam_detector_backend"), "yolo_window_v1")
+            self.assertEqual(call.kwargs.get("facecam_fallback_mode"), "hard_side")
+            self.assertEqual(call.kwargs.get("facecam_anchor"), "edge_middle")
             self.assertEqual(call.kwargs.get("subs_file"), "clip.ass")
 
     async def test_clip_without_words_is_kept_without_subtitles(self):
@@ -104,6 +110,9 @@ class TestProcessingPipeline(unittest.IsolatedAsyncioTestCase):
             "subtitle_position": "bottom",
             "vertical_layout_mode": "standard",
             "facecam_subject_side": "left",
+            "facecam_detector_backend": "yolo_window_v1",
+            "facecam_fallback_mode": "hard_side",
+            "facecam_anchor": "edge_middle",
             "hashtag_count": 7,
             "whisper_model": "base",
             "use_gpu": False
@@ -163,6 +172,9 @@ class TestProcessingPipeline(unittest.IsolatedAsyncioTestCase):
             "/tmp",
             layout_mode="standard",
             facecam_subject_side="left",
+            facecam_detector_backend="yolo_window_v1",
+            facecam_fallback_mode="hard_side",
+            facecam_anchor="edge_middle",
         )
 
 

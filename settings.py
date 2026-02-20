@@ -21,6 +21,9 @@ DEFAULT_SETTINGS = {
     "use_gpu": False,
     "vertical_layout_mode": "standard",
     "facecam_subject_side": "left",
+    "facecam_detector_backend": "yolo_window_v1",
+    "facecam_fallback_mode": "hard_side",
+    "facecam_anchor": "edge_middle",
     "use_llm": False,
     "llm_provider": "openai",
     # Deprecated: определение моментов управляется сценариями, а не постоянной настройкой.

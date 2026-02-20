@@ -58,6 +58,9 @@ def _settings_cache_signature(user_settings):
         "use_gpu": user_settings.get('use_gpu', False),
         "vertical_layout_mode": user_settings.get('vertical_layout_mode', 'standard'),
         "facecam_subject_side": user_settings.get('facecam_subject_side', 'left'),
+        "facecam_detector_backend": user_settings.get('facecam_detector_backend', 'yolo_window_v1'),
+        "facecam_fallback_mode": user_settings.get('facecam_fallback_mode', 'hard_side'),
+        "facecam_anchor": user_settings.get('facecam_anchor', 'edge_middle'),
         "use_llm": user_settings.get('use_llm', False),
         "llm_provider": user_settings.get('llm_provider', 'openai'),
     }
@@ -481,6 +484,9 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
     use_gpu = user_settings.get('use_gpu', False)
     vertical_layout_mode = user_settings.get('vertical_layout_mode', 'standard')
     facecam_subject_side = user_settings.get('facecam_subject_side', 'left')
+    facecam_detector_backend = user_settings.get('facecam_detector_backend', 'yolo_window_v1')
+    facecam_fallback_mode = user_settings.get('facecam_fallback_mode', 'hard_side')
+    facecam_anchor = user_settings.get('facecam_anchor', 'edge_middle')
 
     async def run_with_cancellation_check(func, *args, **kwargs):
         """Запускает функцию с периодической проверкой отмены."""
@@ -579,6 +585,9 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
             convert_kwargs = {
                 "layout_mode": vertical_layout_mode,
                 "facecam_subject_side": facecam_subject_side,
+                "facecam_detector_backend": facecam_detector_backend,
+                "facecam_fallback_mode": facecam_fallback_mode,
+                "facecam_anchor": facecam_anchor,
             }
             if clip_subs:
                 convert_kwargs["subs_file"] = clip_subs
