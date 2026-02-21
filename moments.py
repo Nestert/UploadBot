@@ -5,7 +5,7 @@ import subprocess
 import json
 import logging
 import sys
-import numpy as np
+
 
 logger = logging.getLogger(__name__)
 

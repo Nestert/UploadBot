@@ -17,7 +17,7 @@ services:
     volumes:
       - ./videos:/app/videos
       - ./cache:/app/cache
-      - ./user_settings.json:/app/user_settings.json:ro
+      - ./user_settings.json:/app/user_settings.json
     ports:
       - "8080:8080"
     deploy:

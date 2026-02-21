@@ -5,6 +5,8 @@ import os
 import uuid
 import sys
 
+from errors import VideoProcessingError
+
 def cut_silence(input_video, output_dir=None, silent_speed=99999, min_cut=0.2):
     """
     Удаляет тишину или малодинамичные фрагменты из видео с помощью auto-editor.
@@ -35,14 +37,14 @@ def cut_silence(input_video, output_dir=None, silent_speed=99999, min_cut=0.2):
         if os.path.exists(output_file):
             return output_file
         else:
-            raise Exception("Auto-Editor не создал файл.")
+            raise VideoProcessingError("Auto-Editor не создал файл.")
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
         stdout = (e.stdout or "").strip()
         details = stderr[:500] if stderr else stdout[:500]
-        raise Exception(f"Ошибка Auto-Editor: {e}. {details}")
+        raise VideoProcessingError(f"Ошибка Auto-Editor: {e}. {details}")
     except Exception as e:
-        raise Exception(f"Ошибка Auto-Editor: {e}")
+        raise VideoProcessingError(f"Ошибка Auto-Editor: {e}")
 
 # Пример вызова:
 # cut_video = cut_silence("scene_01.mp4") 

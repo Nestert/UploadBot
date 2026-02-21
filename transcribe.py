@@ -4,7 +4,9 @@ import subprocess
 import os
 import uuid
 import logging
-from typing import Dict, Any, List
+from typing import Dict, List, Any, Optional
+
+from errors import TranscriptionError
 
 # Workaround для конфликта OpenMP (PyTorch/Numba на macOS).
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
@@ -63,9 +65,9 @@ def extract_wav(input_video, output_dir=None):
         if os.path.exists(wav_file):
             return wav_file
         else:
-            raise Exception("Не удалось извлечь аудиодорожку.")
+            raise TranscriptionError("Не удалось извлечь аудиодорожку.")
     except Exception as e:
-        raise Exception(f"Ошибка при извлечении WAV: {e}")
+        raise TranscriptionError(f"Ошибка при извлечении WAV: {e}")
 
 
 _CACHED_MODEL = None
@@ -168,10 +170,17 @@ def run_whisper(wav_file, output_dir=None, model_name="base", use_gpu=None, fp16
             logger.info(f"Транскрибация завершена: {txt_file}")
             return txt_file
         else:
-            raise Exception("Whisper не создал итоговый файл.")
+            raise TranscriptionError("Whisper не создал итоговый файл.")
     except Exception as e:
         logger.error(f"Ошибка транскрибации Whisper: {e}")
-        raise Exception(f"Ошибка транскрибации Whisper: {e}")
+        raise TranscriptionError(f"Ошибка транскрибации Whisper: {e}")
+    finally:
+        # Убираем временный WAV-файл после транскрибации
+        if os.path.exists(wav_file):
+            try:
+                os.remove(wav_file)
+            except OSError as e:
+                logger.warning(f"Не удалось удалить временный wav-файл {wav_file}: {e}")
 
 
 def _extract_words(result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -250,7 +259,7 @@ def transcribe_audio_with_timestamps(input_video, output_dir=None, model_name="b
             )
         except Exception as e:
             logger.error("Ошибка транскрибации с таймкодами: %s", e)
-            raise Exception(f"Ошибка транскрибации с таймкодами: {e}")
+            raise TranscriptionError(f"Ошибка транскрибации с таймкодами: {e}")
     finally:
         # Убираем временный WAV-файл после транскрибации
         if os.path.exists(wav_file):
@@ -315,6 +324,7 @@ def get_model_info():
         "recommended_model": "medium" if check_gpu_available() else "base"
     }
     if check_gpu_available():
+        import torch
         info["gpu_name"] = torch.cuda.get_device_name(0)
         info["gpu_memory"] = torch.cuda.get_device_properties(0).total_memory / 1024**3
     return info

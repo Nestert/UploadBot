@@ -216,7 +216,7 @@ def _migrate_legacy_video_layout():
                 logging.warning("Не удалось перенести legacy видео %s: %s", legacy_path, ex)
 
 
-def _file_md5(path, chunk_size=1024 * 1024):
+def file_md5(path, chunk_size=1024 * 1024):
     hasher = hashlib.md5()
     with open(path, 'rb') as f:
         while True:
@@ -245,7 +245,7 @@ def persist_unprocessed_video(source_path, source_name=None):
         pass
 
     try:
-        file_hash = _file_md5(source_path)
+        file_hash = file_md5(source_path)
     except Exception as ex:
         logging.warning(f"Не удалось вычислить хэш для исходника {source_path}: {ex}")
         file_hash = None
@@ -415,7 +415,7 @@ def get_video_duration(input_video):
         return duration
     except Exception as e:
         logging.error(f"Ошибка получения длительности видео {input_video}: {e}")
-        return 0.0
+        return None
 
 
 def cut_video_chunk(input_video, output_video, start_time, duration):

@@ -6,6 +6,8 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TimedOut
 
+from errors import SendError, VideoProcessingError
+
 from download import download_video
 from utils import get_video_path, TempFileManager, list_available_videos, cut_video_chunk
 import settings
@@ -640,7 +642,7 @@ async def handle_send_ready_video(update, context):
             sent = True
 
         if not sent:
-            raise Exception("Не удалось отправить видео")
+            raise SendError("Не удалось отправить видео")
 
         set_last_source(context, ready_path, 'local_path')
         await query.edit_message_text("✅ Видео отправлено в чат")
@@ -706,15 +708,15 @@ async def handle_extract_moment(update, context):
             elif source_kind == "mailru_url":
                 video_path = await asyncio.to_thread(mailru.download_from_mailru_public, source, temp_mgr.temp_dir)
             else:
-                raise Exception("Неподдерживаемый тип источника")
+                raise VideoProcessingError("Неподдерживаемый тип источника")
 
             if not video_path or not os.path.exists(video_path):
-                raise Exception("Не удалось получить видео для нарезки")
+                raise VideoProcessingError("Не удалось получить видео для нарезки")
 
             chunk_path = temp_mgr.get_path('video', 'moment_clip.mp4')
             success = await asyncio.to_thread(cut_video_chunk, video_path, chunk_path, start_time, duration)
             if not success or not os.path.exists(chunk_path):
-                raise Exception("Не удалось вырезать фрагмент")
+                raise VideoProcessingError("Не удалось вырезать фрагмент")
 
             caption = f"🎬 Момент {token}: {start_time:.0f}s - {start_time + duration:.0f}s"
             with open(chunk_path, 'rb') as f:

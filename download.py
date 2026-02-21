@@ -4,6 +4,8 @@ import yt_dlp
 import os
 import uuid
 import logging
+
+from errors import DownloadError
 from utils import ensure_videos_dir
 
 def download_video(youtube_url, output_dir=None):
@@ -57,13 +59,13 @@ def download_video(youtube_url, output_dir=None):
             file_size = os.path.getsize(output_filename)
             logging.info(f"Видео успешно загружено: {output_filename} ({file_size} байт)")
             return output_filename
-        raise Exception("Не удалось скачать видео.")
+        raise DownloadError("Не удалось скачать видео.")
     except yt_dlp.utils.DownloadError as e:
         logging.error(f"yt-dlp DownloadError: {e}")
-        raise Exception(
+        raise DownloadError(
             f"Ошибка загрузки видео. Возможные причины: медленное соединение, ограничения доступа к YouTube, "
             f"или проблемы с видео. Попробуйте другое видео или повторите попытку позже. Детали: {e}"
         )
     except Exception as e:
         logging.error(f"Ошибка загрузки видео: {e}")
-        raise Exception(f"Ошибка загрузки видео: {e}")
+        raise DownloadError(f"Ошибка загрузки видео: {e}")

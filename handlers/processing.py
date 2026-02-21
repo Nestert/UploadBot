@@ -7,6 +7,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from errors import CancellationError, DownloadError, VideoProcessingError
+
 from download import download_video
 from transcribe import transcribe_audio_with_timestamps
 from scenes import detect_scenes
@@ -211,10 +213,10 @@ async def process_source(update, context, source, source_type='url', random_cut=
                     await file_obj.download_to_drive(video_path)
                     source_name_hint = context.user_data.get('pending_filename') or "telegram_video.mp4"
                 except Exception as e:
-                    raise Exception(f"Ошибка загрузки из Telegram: {e}")
+                    raise DownloadError(f"Ошибка загрузки из Telegram: {e}")
             
             if not video_path or not os.path.exists(video_path):
-                 raise Exception("Не удалось получить видео файл.")
+                 raise DownloadError("Не удалось получить видео файл.")
 
             # Сохраняем исходник в videos/raw, чтобы разделить сырье и результат.
             raw_video_path = await asyncio.to_thread(
@@ -454,7 +456,7 @@ async def process_video_task(chat_id, video_path, message, context=None, user_se
     except Exception as e:
         if chat_id in processing_jobs:
             del processing_jobs[chat_id]
-        if "отменена" in str(e).lower():
+        if isinstance(e, CancellationError) or "отменена" in str(e).lower():
             try:
                 await message.edit_text("❌ Обработка отменена")
             except Exception:
@@ -500,7 +502,7 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
         while not future.done():
             if tracker.is_cancelled():
                 future.cancel()
-                raise Exception("Обработка отменена")
+                raise CancellationError("Обработка отменена")
             await asyncio.sleep(0.5)
         
         return future.result()
@@ -521,7 +523,7 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
             edited_files = []
             for f in scene_files:
                 if tracker.is_cancelled():
-                    raise Exception("Обработка отменена")
+                    raise CancellationError("Обработка отменена")
                 try:
                     edited_file = await run_with_cancellation_check(cut_silence, f, temp_mgr.temp_dir)
                     edited_files.append(edited_file)
@@ -541,7 +543,7 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
         clip_subtitles = {}
         for f in edited_files:
             if tracker.is_cancelled():
-                raise Exception("Обработка отменена")
+                raise CancellationError("Обработка отменена")
 
             transcription = await run_with_cancellation_check(
                 transcribe_audio_with_timestamps,
@@ -580,7 +582,7 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
         final_videos = []
         for f in edited_files:
             if tracker.is_cancelled():
-                raise Exception("Обработка отменена")
+                raise CancellationError("Обработка отменена")
             clip_subs = clip_subtitles.get(f) if add_subtitles else None
             convert_kwargs = {
                 "layout_mode": vertical_layout_mode,
@@ -649,6 +651,6 @@ def retry_operation(func, max_retries=3, initial_delay=1.0):
                     delay *= 2
                 else:
                     logging.error(f"Все {max_retries} попыток исчерпаны: {e}")
-                    raise Exception(f"Операция не удалась после {max_retries} попыток: {e}")
+                    raise VideoProcessingError(f"Операция не удалась после {max_retries} попыток: {e}")
 
     return wrapper

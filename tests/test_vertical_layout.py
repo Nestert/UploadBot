@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import vertical
+import vertical.detection
 
 
 class TestVerticalLayouts(unittest.TestCase):
@@ -12,7 +13,7 @@ class TestVerticalLayouts(unittest.TestCase):
         def fake_run_ffmpeg(cmd, *_args, **_kwargs):
             captured["cmd"] = cmd
 
-        with patch("vertical._run_ffmpeg", side_effect=fake_run_ffmpeg):
+        with patch("vertical.rendering._run_ffmpeg", side_effect=fake_run_ffmpeg):
             vertical._run_standard_layout("input.mp4", "output.mp4", 1080, 1920)
 
         self.assertIn("-vf", captured["cmd"])
@@ -22,10 +23,10 @@ class TestVerticalLayouts(unittest.TestCase):
         self.assertIn("setsar=1", vf_value)
 
     def test_convert_facecam_layout_falls_back_to_standard(self):
-        with patch("vertical.uuid.uuid4", return_value="test-id"), \
-             patch("vertical._run_facecam_top_split_layout", side_effect=Exception("face not found")), \
-             patch("vertical._run_standard_layout") as standard_mock, \
-             patch("vertical.os.path.exists", return_value=True):
+        with patch("vertical.rendering.uuid.uuid4", return_value="test-id"), \
+             patch("vertical.rendering._run_facecam_top_split_layout", side_effect=Exception("face not found")), \
+             patch("vertical.rendering._run_standard_layout") as standard_mock, \
+             patch("vertical.rendering.os.path.exists", return_value=True):
             output = vertical.convert_to_vertical(
                 "input.mp4",
                 output_dir="/tmp",
@@ -118,7 +119,7 @@ class TestVerticalLayouts(unittest.TestCase):
         detector = _FakeDetector()
         detectors = [{"name": "haarcascade_profileface.xml", "detector": detector}]
 
-        with patch.object(vertical, "cv2", fake_cv2):
+        with patch.object(vertical.detection, "cv2", fake_cv2):
             detections = vertical._detect_faces_in_resized_frame(object(), detectors)
 
         self.assertEqual(len(detections), 2)
@@ -139,10 +140,10 @@ class TestVerticalLayouts(unittest.TestCase):
             [],
         ]
 
-        with patch("vertical._probe_frames_with_indices_from_start", return_value=frames), \
-             patch("vertical._get_face_detectors", return_value=[{"name": "haarcascade_frontalface_default.xml", "detector": object()}]), \
-             patch("vertical._resize_for_detection", side_effect=lambda frame, max_side=640: (frame, 1.0)), \
-             patch("vertical._detect_faces_in_resized_frame", side_effect=detections):
+        with patch("vertical.detection._probe_frames_with_indices_from_start", return_value=frames), \
+             patch("vertical.detection._get_face_detectors", return_value=[{"name": "haarcascade_frontalface_default.xml", "detector": object()}]), \
+             patch("vertical.detection._resize_for_detection", side_effect=lambda frame, max_side=640: (frame, 1.0)), \
+             patch("vertical.detection._detect_faces_in_resized_frame", side_effect=detections):
             face_box, probe_frames, detect_debug = vertical._detect_face_once(
                 "input.mp4",
                 return_probe_frames=True,
@@ -168,12 +169,12 @@ class TestVerticalLayouts(unittest.TestCase):
             "fallback_reason": None,
         }
 
-        with patch("vertical._probe_video_metadata", return_value=(1920, 1080, 60.0)), \
-             patch("vertical._probe_frames_with_indices_from_start", return_value=[(0, object()), (3, object())]), \
-             patch("vertical._detect_webcam_region", return_value=((0, 10, 620, 360), webcam_debug)), \
-             patch("vertical._save_facecam_debug_frames"), \
-             patch("vertical._build_content_crop", return_value=(100, 0, 800, 950)) as content_crop_mock, \
-             patch("vertical._run_ffmpeg", side_effect=fake_run_ffmpeg):
+        with patch("vertical.rendering._probe_video_metadata", return_value=(1920, 1080, 60.0)), \
+             patch("vertical.rendering._probe_frames_with_indices_from_start", return_value=[(0, object()), (3, object())]), \
+             patch("vertical.rendering._detect_webcam_region", return_value=((0, 10, 620, 360), webcam_debug)), \
+             patch("vertical.rendering._save_facecam_debug_frames"), \
+             patch("vertical.rendering._build_content_crop", return_value=(100, 0, 800, 950)) as content_crop_mock, \
+             patch("vertical.rendering._run_ffmpeg", side_effect=fake_run_ffmpeg):
             vertical._run_facecam_top_split_layout(
                 "input.mp4",
                 "output.mp4",
@@ -194,15 +195,15 @@ class TestVerticalLayouts(unittest.TestCase):
         def fake_run_ffmpeg(cmd, *_args, **_kwargs):
             captured["cmd"] = cmd
 
-        with patch("vertical._probe_video_metadata", return_value=(1920, 1080, 50.0)), \
-             patch("vertical._probe_frames_with_indices_from_start", return_value=[(0, object()), (3, object())]), \
+        with patch("vertical.rendering._probe_video_metadata", return_value=(1920, 1080, 50.0)), \
+             patch("vertical.rendering._probe_frames_with_indices_from_start", return_value=[(0, object()), (3, object())]), \
              patch(
-                 "vertical._detect_webcam_region",
+                 "vertical.rendering._detect_webcam_region",
                  return_value=(None, {"fallback_reason": "low_score", "preferred_side": "right", "candidate_count": 0, "track_count": 0, "best_score": None}),
              ), \
-             patch("vertical._save_facecam_debug_frames"), \
-             patch("vertical._build_content_crop", return_value=(100, 0, 800, 950)), \
-             patch("vertical._run_ffmpeg", side_effect=fake_run_ffmpeg):
+             patch("vertical.rendering._save_facecam_debug_frames"), \
+             patch("vertical.rendering._build_content_crop", return_value=(100, 0, 800, 950)), \
+             patch("vertical.rendering._run_ffmpeg", side_effect=fake_run_ffmpeg):
             vertical._run_facecam_top_split_layout(
                 "input.mp4",
                 "output.mp4",
@@ -311,7 +312,7 @@ class TestVerticalLayouts(unittest.TestCase):
         self.assertTrue(mock_detector.detectMultiScale.called)
 
     def test_heuristic_face_box_calls_detect_with_named_subject_side(self):
-        with patch("vertical._detect_webcam_region", return_value=(10, 20, 300, 200)) as detect_mock:
+        with patch("vertical.webcam._detect_webcam_region", return_value=(10, 20, 300, 200)) as detect_mock:
             face_box = vertical._heuristic_face_box_from_corners(1920, 1080, [object()], subject_side="right")
 
         self.assertIsNotNone(face_box)

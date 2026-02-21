@@ -8,25 +8,8 @@ import logging
 import json
 import sys
 
-def get_video_duration(video_path):
-    """
-    Получает длительность видео в секундах с помощью ffprobe.
-    """
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "json",
-        video_path
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(result.stdout)
-        duration = float(data['format']['duration'])
-        return duration
-    except Exception as e:
-        logging.warning(f"Не удалось определить длительность видео {video_path}: {e}")
-        return None
+from utils import get_video_duration
+from errors import SceneDetectionError
 
 def split_long_clip(video_path, output_dir, max_duration=90):
     """
@@ -131,7 +114,7 @@ def detect_scenes(input_video, output_dir=None, min_duration=20, max_duration=90
         stderr = ""
         if hasattr(e, "stderr") and e.stderr:
             stderr = f" | stderr: {e.stderr.strip()[:300]}"
-        raise Exception(f"Ошибка при распознании сцен: {e}{stderr}")
+        raise SceneDetectionError(f"Ошибка при распознании сцен: {e}{stderr}")
 
     clip_files = sorted(glob.glob(os.path.join(scene_dir, "*.mp4")))
 

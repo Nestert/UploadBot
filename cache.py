@@ -7,6 +7,8 @@ import logging
 import time
 import shutil
 
+from utils import file_md5, human_size
+
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = "cache"
@@ -27,17 +29,10 @@ def ensure_cache_dirs():
 def get_file_hash(file_path, chunk_size=1024 * 1024):
     """
     Вычисляет хэш файла для идентификации.
-    Читает файл чанками, чтобы не загружать всё видео в RAM.
+    Делегирует в utils.file_md5.
     """
-    hasher = hashlib.md5()
     try:
-        with open(file_path, 'rb') as f:
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        return file_md5(file_path, chunk_size=chunk_size)
     except Exception as e:
         logger.error(f"Ошибка вычисления хэша: {e}")
         return None
@@ -157,12 +152,8 @@ def get_cache_size():
 
 
 def format_cache_size(size_bytes):
-    """Форматирует размер в человекочитаемый вид."""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"
+    """Форматирует размер в человекочитаемый вид. Делегирует в utils.human_size."""
+    return human_size(size_bytes)
 
 
 def clear_cache(max_age_days=30):
