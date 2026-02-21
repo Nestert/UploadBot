@@ -54,3 +54,6 @@ chunk-Scenes.csv
 # OS files
 .DS_Store
 Thumbs.db
+
+# Rules
+.cursorrules
