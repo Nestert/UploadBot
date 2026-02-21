@@ -241,15 +241,23 @@ def transcribe_audio_with_timestamps(input_video, output_dir=None, model_name="b
 
     wav_file = extract_wav(input_video, output_dir)
     try:
-        result = _transcribe_with_model(
-            wav_file,
-            model_name=model_name,
-            use_gpu=use_gpu,
-            word_timestamps=True
-        )
-    except Exception as e:
-        logger.error("Ошибка транскрибации с таймкодами: %s", e)
-        raise Exception(f"Ошибка транскрибации с таймкодами: {e}")
+        try:
+            result = _transcribe_with_model(
+                wav_file,
+                model_name=model_name,
+                use_gpu=use_gpu,
+                word_timestamps=True
+            )
+        except Exception as e:
+            logger.error("Ошибка транскрибации с таймкодами: %s", e)
+            raise Exception(f"Ошибка транскрибации с таймкодами: {e}")
+    finally:
+        # Убираем временный WAV-файл после транскрибации
+        if os.path.exists(wav_file):
+            try:
+                os.remove(wav_file)
+            except OSError as e:
+                logger.warning(f"Не удалось удалить временный wav-файл {wav_file}: {e}")
 
     return {
         "text": (result.get("text") or "").strip(),

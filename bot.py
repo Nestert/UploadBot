@@ -15,10 +15,16 @@ load_dotenv()
 os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+from logging.handlers import RotatingFileHandler
+
 # Логгирование для отладки
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler('bot.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+    ]
 )
 
 # Импортируем функцию регистрации обработчиков
