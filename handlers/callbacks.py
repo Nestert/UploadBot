@@ -9,7 +9,7 @@ from telegram.error import TimedOut
 from errors import SendError, VideoProcessingError
 
 from download import download_video
-from utils import get_video_path, TempFileManager, list_available_videos, cut_video_chunk
+from utils import get_video_path, TempFileManager, list_available_videos, cut_video_chunk, delete_ready_video
 import settings
 import mailru
 from settings import save_settings, DEFAULT_SETTINGS
@@ -673,6 +673,37 @@ async def handle_preview_ready_video(update, context):
         await query.delete_message()
     except Exception:
         pass
+
+
+async def handle_delete_ready_video(update, context):
+    """Удаляет выбранное готовое видео."""
+    from handlers.commands import ready_videos
+    
+    query = update.callback_query
+    await query.answer()
+
+    token = query.data.replace("action_ready_delete_", "", 1)
+    ready_path = await _resolve_token_ready_video_path(context, token)
+    
+    if not ready_path:
+        await query.edit_message_text("❌ Список готовых видео устарел. Открой /ready_videos ещё раз.")
+        return
+
+    deleted = delete_ready_video(ready_path)
+    if deleted:
+        await query.answer("✅ Готовое видео удалено", show_alert=True)
+        # Refresh the list of ready videos
+        chat_id = query.message.chat_id
+        callback_update = create_callback_update(chat_id, context.bot)
+        # To avoid editing a message that's being deleted, just call ready_videos again
+        # which will send a new message. We can delete the old one.
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        await ready_videos(callback_update, context)
+    else:
+        await query.answer("❌ Ошибка удаления видео", show_alert=True)
 
 
 async def handle_extract_moment(update, context):

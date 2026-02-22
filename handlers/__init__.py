@@ -32,6 +32,7 @@ def register_handlers(application):
         handle_extract_moment,
         handle_send_ready_video,
         handle_preview_ready_video,
+        handle_delete_ready_video,
     )
     from handlers.legacy_callbacks import (
         process_existing_video,
@@ -77,6 +78,7 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(handle_moments_existing_video, pattern=r"^action_moments_"))
     application.add_handler(CallbackQueryHandler(handle_send_ready_video, pattern=r"^action_ready_send_"))
     application.add_handler(CallbackQueryHandler(handle_preview_ready_video, pattern=r"^action_ready_preview_"))
+    application.add_handler(CallbackQueryHandler(handle_delete_ready_video, pattern=r"^action_ready_delete_"))
     application.add_handler(CallbackQueryHandler(handle_extract_moment, pattern=r"^extract_moment_"))
 
     # Legacy callback-кнопки (совместимость со старыми сообщениями)

@@ -20,6 +20,7 @@ from vertical.geometry import (
     _camera_crop_sanity_ok,
     _build_content_crop,
     _build_split_filter,
+    _expand_rect_to_aspect,
 )
 from vertical.detection import (
     _normalize_subject_side,
@@ -109,7 +110,7 @@ def _run_facecam_top_split_layout(input_clip, output_file, target_width, target_
     fallback_reason = webcam_debug.get("fallback_reason")
     resolved_side = webcam_debug.get("preferred_side") or "left"
     if webcam_rect is not None and _camera_rect_sanity_ok(webcam_rect, source_w, source_h):
-        camera_rect = webcam_rect
+        camera_rect = _expand_rect_to_aspect(webcam_rect, source_w, source_h, top_aspect)
         selected_face_box = _pseudo_face_box_from_camera_rect(webcam_rect)
         face_found_source = f"webcam_region_{normalized_backend}"
         fallback_reason = None

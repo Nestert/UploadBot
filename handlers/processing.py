@@ -391,6 +391,15 @@ async def process_video_task(chat_id, video_path, message, context=None, user_se
                 shutil.copy2(fv, output_path)
                 persisted_videos.append(output_path)
                 logging.info("Итоговое видео сохранено: %s", output_path)
+                
+                # Save tags as description
+                try:
+                    desc_path = f"{output_path}.txt"
+                    with open(desc_path, 'w', encoding='utf-8') as df:
+                        df.write(tags)
+                    logging.info("Описание видео сохранено: %s", desc_path)
+                except Exception as ex:
+                    logging.warning("Не удалось сохранить описание для видео %s: %s", output_path, ex)
 
             sent_count = 0
             for pv in persisted_videos:

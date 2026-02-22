@@ -125,12 +125,12 @@ async def list_videos(update, context):
         message_text += f"{idx}. {video['name']}\n   Размер: {video['size']}\n\n"
 
         keyboard.append([
-            InlineKeyboardButton("▶️ Full", callback_data=f"action_process_full_{token}"),
-            InlineKeyboardButton("🎲 Random 60s", callback_data=f"action_process_random_{token}"),
+            InlineKeyboardButton(f"▶️ Full {idx}", callback_data=f"action_process_full_{token}"),
+            InlineKeyboardButton(f"🎲 Random 60s {idx}", callback_data=f"action_process_random_{token}"),
         ])
         keyboard.append([
-            InlineKeyboardButton("🖼️ Превью", callback_data=f"action_preview_{token}"),
-            InlineKeyboardButton("🎯 Моменты", callback_data=f"action_moments_{token}"),
+            InlineKeyboardButton(f"🖼️ Превью {idx}", callback_data=f"action_preview_{token}"),
+            InlineKeyboardButton(f"🎯 Моменты {idx}", callback_data=f"action_moments_{token}"),
         ])
 
     # Короткие токены предотвращают переполнение callback_data при длинных именах.
@@ -161,11 +161,21 @@ async def ready_videos(update, context):
     for idx, video in enumerate(videos[:10], 1):
         token = f"r{idx}"
         ready_tokens[token] = video['path']
-        message_text += f"{idx}. {video['name']}\n   Размер: {video['size']}\n\n"
+        
+        message_text += f"{idx}. {video['name']}\n"
+        message_text += f"   📅 Дата: {video.get('date', 'Неизвестно')}\n"
+        message_text += f"   ⏱️ Длительность: {video.get('duration', '? с')}\n"
+        message_text += f"   Размер: {video['size']}\n"
+        message_text += f"   📝 Описание: {video.get('description', 'Без описания')[:100]}"
+        if len(video.get('description', '')) > 100:
+            message_text += "...\n\n"
+        else:
+            message_text += "\n\n"
 
         keyboard.append([
-            InlineKeyboardButton("📤 Отправить в чат", callback_data=f"action_ready_send_{token}"),
-            InlineKeyboardButton("🖼️ Превью", callback_data=f"action_ready_preview_{token}"),
+            InlineKeyboardButton(f"📤 Отправить {idx}", callback_data=f"action_ready_send_{token}"),
+            InlineKeyboardButton(f"🖼️ Превью {idx}", callback_data=f"action_ready_preview_{token}"),
+            InlineKeyboardButton(f"❌ Удалить {idx}", callback_data=f"action_ready_delete_{token}"),
         ])
 
     context.user_data['ready_video_tokens'] = ready_tokens

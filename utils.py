@@ -307,6 +307,8 @@ def list_available_videos():
     return result
 
 
+import datetime
+
 def list_ready_videos():
     """
     Возвращает список готовых видео файлов в папке videos/ready.
@@ -324,17 +326,63 @@ def list_ready_videos():
             size = os.path.getsize(vf)
             mtime = os.path.getmtime(vf)
             basename = os.path.basename(vf)
+            
+            # Formatted date
+            dt = datetime.datetime.fromtimestamp(mtime)
+            formatted_date = dt.strftime('%d.%m.%Y %H:%M')
+            
+            # Duration
+            duration_sec = get_video_duration(vf)
+            formatted_duration = f"{int(duration_sec)}с" if duration_sec else "? с"
+            
+            # Description (tags)
+            description = "Без описания"
+            desc_file = f"{vf}.txt"
+            if os.path.exists(desc_file):
+                try:
+                    with open(desc_file, 'r', encoding='utf-8') as df:
+                        description = df.read().strip()
+                except Exception as e:
+                    logging.warning(f"Не удалось прочитать описание для {vf}: {e}")
+            
             result.append({
                 'path': vf,
                 'name': basename,
                 'size': human_size(size),
-                'mtime': mtime
+                'mtime': mtime,
+                'date': formatted_date,
+                'duration': formatted_duration,
+                'description': description
             })
         except Exception as ex:
             logging.warning(f"Ошибка при получении информации о файле {vf}: {ex}")
 
     result.sort(key=lambda x: x['mtime'], reverse=True)
     return result
+
+
+def delete_ready_video(video_path):
+    """Удаляет готовое видео и связанный с ним файл описания."""
+    if not video_path or not os.path.exists(video_path):
+        return False
+    
+    deleted = False
+    try:
+        os.remove(video_path)
+        deleted = True
+        logging.info(f"Удалено готовое видео: {video_path}")
+    except Exception as e:
+        logging.error(f"Ошибка при удалении видео {video_path}: {e}")
+    
+    desc_file = f"{video_path}.txt"
+    if os.path.exists(desc_file):
+        try:
+            os.remove(desc_file)
+            logging.info(f"Удален файл описания: {desc_file}")
+        except Exception as e:
+            logging.error(f"Ошибка при удалении файла описания {desc_file}: {e}")
+            
+    return deleted
 
 
 def get_video_path(video_name):

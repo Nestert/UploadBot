@@ -182,7 +182,7 @@ def _build_hard_side_camera_rect(source_w, source_h, top_aspect, subject_side="l
     normalized_anchor = _normalize_facecam_anchor(anchor)
     side = normalized_side if normalized_side in {"left", "right"} else "left"
 
-    crop_w_float = _clamp(source_w * 0.34, source_w * 0.22, source_w * 0.50)
+    crop_w_float = _clamp(source_w * 0.40, source_w * 0.22, source_w * 0.50)
     crop_w = int(round(crop_w_float))
     crop_h = int(round(crop_w / float(max(top_aspect, 0.001))))
 
@@ -277,6 +277,17 @@ def _build_content_crop(face_box, source_w, source_h, bottom_aspect):
     center_y += (base_h * 0.08) if face_cy < source_h / 2 else -(base_h * 0.08)
 
     return _fit_aspect_crop(center_x, center_y, source_w, source_h, bottom_aspect, preferred_h=base_h)
+
+
+def _expand_rect_to_aspect(rect, frame_w, frame_h, target_aspect):
+    """Расширяет прямоугольник из центра до заданных пропорций, чтобы избежать обрезки при масштабировании."""
+    if not rect:
+        return rect
+    x, y, w, h = rect
+    cx = x + w / 2.0
+    cy = y + h / 2.0
+    pref_h = max(float(h), float(w) / max(0.001, target_aspect))
+    return _fit_aspect_crop(cx, cy, frame_w, frame_h, target_aspect, preferred_h=pref_h)
 
 
 def _build_split_filter(camera_rect, content_rect, target_width, top_height, bottom_height):
