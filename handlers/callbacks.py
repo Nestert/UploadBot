@@ -60,6 +60,19 @@ def _hashtags_keyboard(current_count):
     return InlineKeyboardMarkup(rows)
 
 
+def _max_clips_keyboard(current_count):
+    options = [1, 2, 3, 5, 8]
+    rows = []
+    for count in options:
+        marker = "✅ " if count == current_count else ""
+        rows.append([InlineKeyboardButton(f"{marker}{count} клипов", callback_data=f"maxclips_{count}")])
+    rows.append([
+        InlineKeyboardButton("🔙 В настройки", callback_data="setting_back"),
+        InlineKeyboardButton("🏠 В меню", callback_data="cmd_start"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _whisper_keyboard(current_model):
     models = ["tiny", "base", "small", "medium", "large"]
     rows = []
@@ -203,6 +216,25 @@ async def handle_settings_callback(update, context):
         user_settings['hashtag_count'] = count
         save_settings(user_id, user_settings)
 
+    elif query.data == "setting_max_clips":
+        text = "✂️ Выберите максимальное количество клипов (Top-K):\n\n"
+        try:
+            await query.message.edit_text(
+                text,
+                reply_markup=_max_clips_keyboard(user_settings.get('max_clips_to_process', 3)),
+            )
+        except Exception as e:
+            logging.warning(f"Не удалось открыть меню клипов: {e}")
+        return
+
+    elif query.data.startswith("maxclips_"):
+        try:
+            count = int(query.data.replace("maxclips_", ""))
+        except ValueError:
+            count = user_settings.get('max_clips_to_process', 3)
+        user_settings['max_clips_to_process'] = count
+        save_settings(user_id, user_settings)
+
     elif query.data == "setting_gpu":
         user_settings['use_gpu'] = not user_settings.get('use_gpu', False)
         save_settings(user_id, user_settings)
@@ -258,7 +290,7 @@ async def handle_settings_callback(update, context):
             pass
         return
 
-    if not query.data.startswith(("duration_", "hashtags_", "whisper_")):
+    if not query.data.startswith(("duration_", "hashtags_", "whisper_", "maxclips_")):
         try:
             await query.message.delete()
         except Exception as e:

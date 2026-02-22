@@ -15,6 +15,7 @@ DEFAULT_SETTINGS = {
     "subtitle_position": "bottom",
     "subtitle_font_size": 32,
     "hashtag_count": 7,
+    "max_clips_to_process": 3,
     # Deprecated: оставлено только для обратной совместимости сохраненных настроек.
     "video_quality": "medium",
     "whisper_model": "base",
@@ -142,6 +143,12 @@ def get_hashtag_count(user_id):
     """Получить количество хештегов."""
     settings = load_settings(user_id)
     return settings.get("hashtag_count", DEFAULT_SETTINGS["hashtag_count"])
+
+
+def get_max_clips_to_process(user_id):
+    """Получить максимальное количество клипов для обработки."""
+    settings = load_settings(user_id)
+    return settings.get("max_clips_to_process", DEFAULT_SETTINGS.get("max_clips_to_process", 3))
 
 
 def update_setting(user_id, key, value):

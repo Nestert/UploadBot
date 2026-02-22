@@ -382,3 +382,87 @@ def analyze_video_quality(video_path):
     except Exception as e:
         logger.error(f"Ошибка анализа качества: {e}")
         return None
+
+
+def _get_clip_audio_rms(video_path):
+    """Возвращает средний (RMS) уровень звука клипа в децибелах."""
+    try:
+        cmd = [
+            "ffmpeg",
+            "-i", video_path,
+            "-af", "volumedetect",
+            "-f", "null",
+            "-"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        for line in result.stderr.split('\\n'):
+            if 'mean_volume' in line.lower():
+                # Вытаскиваем значение, например "mean_volume: -23.1 dB"
+                try:
+                    return float(line.split(':')[1].replace('dB', '').strip())
+                except ValueError:
+                    return -99.0
+        return -99.0
+    except Exception as e:
+        logger.error(f"Ошибка RMS для {video_path}: {e}")
+        return -99.0
+
+
+def rank_clips(clip_paths, top_k=3, optimal_duration=25):
+    """
+    Ранжирует и фильтрует список видеоклипов.
+    Оценка учитывает RMS уровень звука и отклонение от оптимальной длительности.
+    Возвращает список лучших путей.
+    """
+    if not clip_paths:
+        return []
+    
+    if len(clip_paths) <= top_k:
+        return clip_paths
+    
+    scored_clips = []
+    
+    for path in clip_paths:
+        try:
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            data = json.loads(result.stdout)
+            duration = float(data.get('format', {}).get('duration', 0))
+            
+            rms_db = _get_clip_audio_rms(path)
+            # rms_db обычно отрицательный, -10 dB громче чем -30 dB.
+            # Нормализуем примерно от -50 (очень тихо) до -10 (громко)
+            normalized_audio = max(0.0, min(1.0, (rms_db + 50) / 40))
+            
+            # Штрафуем слишком короткие или слишком длинные
+            duration_diff = abs(duration - optimal_duration)
+            duration_score = max(0.0, 1.0 - (duration_diff / optimal_duration))
+            
+            # Комбинированная оценка: 70% звук, 30% длительность
+            total_score = (normalized_audio * 0.7) + (duration_score * 0.3)
+            
+            scored_clips.append({
+                "path": path,
+                "score": total_score,
+                "duration": duration,
+                "rms": rms_db
+            })
+        except Exception as e:
+            logger.error(f"Ошибка оценки клипа {path}: {e}")
+            scored_clips.append({"path": path, "score": 0.0})
+    
+    # Сортируем по убыванию оценки
+    scored_clips.sort(key=lambda x: x["score"], reverse=True)
+    
+    best_clips = []
+    for info in scored_clips[:top_k]:
+        logger.info(f"Отобран клип: {os.path.basename(info['path'])} | RMS: {info.get('rms', 'N/A'):.1f}dB, Score: {info['score']:.2f}")
+        best_clips.append(info["path"])
+        
+    return best_clips

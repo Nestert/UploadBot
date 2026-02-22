@@ -13,6 +13,7 @@ from download import download_video
 from transcribe import transcribe_audio_with_timestamps
 from scenes import detect_scenes
 from autoedit import cut_silence
+from moments import rank_clips
 from vertical import convert_to_vertical
 from subtitles import create_ass_subtitles_from_words
 from tagging import generate_tags
@@ -39,6 +40,7 @@ cancel_events = {}
 STAGES = [
     ("🔍", "Анализ видео"),
     ("🔇", "Удаление тишины"),
+    ("📊", "Ранжирование моментов"),
     ("🎤", "Транскрибация клипов и субтитры"),
     ("📱", "Конвертация"),
     ("🏷️", "Генерация хештегов"),
@@ -489,6 +491,7 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
     remove_silence = user_settings.get('remove_silence', True)
     add_subtitles = user_settings.get('add_subtitles', True)
     hashtag_count = user_settings.get('hashtag_count', 7)
+    max_clips_to_process = user_settings.get('max_clips_to_process', 3)
     subtitle_style = user_settings.get('subtitle_style', 'subtitle')
     subtitle_position = user_settings.get('subtitle_position', 'bottom')
     whisper_model = user_settings.get('whisper_model', 'base')
@@ -542,6 +545,18 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
                     edited_files.append(f)
         else:
             edited_files = scene_files
+
+        if tracker.is_cancelled():
+            raise Exception("Обработка отменена")
+        if not await tracker.update_stage("Ранжирование моментов...", "📊"):
+            raise Exception("Обработка отменена")
+            
+        if edited_files:
+            edited_files = await run_with_cancellation_check(
+                rank_clips,
+                edited_files,
+                max_clips_to_process
+            )
 
         if tracker.is_cancelled():
             raise Exception("Обработка отменена")

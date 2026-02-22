@@ -212,6 +212,7 @@ async def show_settings(update, context):
     text += f"📏 Макс. длительность: {user_settings['max_clip_duration']} сек\n"
     text += f"🔇 Удаление тишины: {'✅' if user_settings['remove_silence'] else '❌'}\n"
     text += f"📝 Субтитры: {'✅' if user_settings['add_subtitles'] else '❌'}\n"
+    text += f"✂️ Клипов на выходе: {user_settings.get('max_clips_to_process', 3)}\n"
     text += f"📍 Позиция субтитров: {position_labels.get(position, 'Низ')}\n"
     text += f"📱 Режим кадрирования: {layout_labels.get(layout_mode, 'Стандартный 9:16')}\n"
     text += f"🎯 Лицо в кадре: {side_labels.get(facecam_subject_side, 'Слева')}\n"
@@ -223,6 +224,7 @@ async def show_settings(update, context):
     keyboard = [
         [InlineKeyboardButton(f"📏 Макс. длительность: {user_settings['max_clip_duration']}", callback_data="setting_duration")],
         [InlineKeyboardButton(f"🔇 Тишина: {'✅' if user_settings['remove_silence'] else '❌'}", callback_data="setting_silence")],
+        [InlineKeyboardButton(f"✂️ Клипов (Top-K): {user_settings.get('max_clips_to_process', 3)}", callback_data="setting_max_clips")],
         [InlineKeyboardButton(f"📝 Субтитры: {'✅' if user_settings['add_subtitles'] else '❌'}", callback_data="setting_subtitles")],
         [InlineKeyboardButton(f"📍 Позиция: {position_labels.get(position, 'Низ')}", callback_data="setting_subtitle_position")],
         [InlineKeyboardButton(f"📱 Кадрирование: {layout_labels.get(layout_mode, 'Стандартный 9:16')}", callback_data="setting_vertical_layout")],
