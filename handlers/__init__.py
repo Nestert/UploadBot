@@ -92,6 +92,7 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^duration_"))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^hashtags_"))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^whisper_"))
+    application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^maxclips_"))
     application.add_handler(CallbackQueryHandler(handle_interface_callback, pattern=r"^cmd_"))
     application.add_handler(CallbackQueryHandler(mailru_disconnect, pattern=r"^mailru_disconnect$"))
 

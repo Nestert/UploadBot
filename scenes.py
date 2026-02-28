@@ -222,7 +222,7 @@ def _run_scenedetect(input_video, scene_dir, min_duration):
         "--input", input_video,
         "detect-adaptive",
         "--min-scene-len", str(min_duration),
-        "--adaptive-threshold", "3.0",
+        "--threshold", "3.0",
         "list-scenes",
         "split-video",
         "--output", scene_dir,
