@@ -46,7 +46,8 @@ videos/
 
 # Runtime files
 .bot_pid
-chunk-Scenes.csv
+*-Scenes.csv
+videos/ready/*.txt
 
 # Docker
 .docker/
@@ -60,4 +61,3 @@ Thumbs.db
 
 plans/
 .github/
-2026-02-27 22-19-12-Scenes.csv
