@@ -10,7 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from errors import CancellationError, DownloadError, VideoProcessingError
 
 from download import download_video
-from transcribe import transcribe_audio_with_timestamps
+from transcribe import transcribe_audio_with_timestamps, quick_word_density
 from scenes import detect_scenes
 from autoedit import cut_silence
 from moments import rank_clips
@@ -548,14 +548,37 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
 
         if tracker.is_cancelled():
             raise Exception("Обработка отменена")
+        if not await tracker.update_stage("Быстрая оценка речи в клипах...", "🔎"):
+            raise Exception("Обработка отменена")
+
+        # Быстрая оценка плотности речи через Whisper tiny — только для ранжирования.
+        # Это дешевле, чем полная транскрипция, и позволяет отобрать самые «живые» клипы.
+        clip_word_density: dict = {}
+        if edited_files and len(edited_files) > max_clips_to_process:
+            for f in edited_files:
+                if tracker.is_cancelled():
+                    raise CancellationError("Обработка отменена")
+                try:
+                    wps = await run_with_cancellation_check(
+                        quick_word_density, f, temp_mgr.temp_dir, use_gpu
+                    )
+                    clip_word_density[f] = wps
+                except Exception as _e:
+                    logging.warning("quick_word_density failed for %s: %s", f, _e)
+                    clip_word_density[f] = 0.0
+
+        if tracker.is_cancelled():
+            raise Exception("Обработка отменена")
         if not await tracker.update_stage("Ранжирование моментов...", "📊"):
             raise Exception("Обработка отменена")
-            
+
         if edited_files:
             edited_files = await run_with_cancellation_check(
                 rank_clips,
                 edited_files,
-                max_clips_to_process
+                max_clips_to_process,
+                25,  # optimal_duration
+                clip_word_density or None,
             )
 
         if tracker.is_cancelled():
@@ -563,6 +586,7 @@ async def run_processing_pipeline(input_file, tracker, user_settings, temp_mgr):
         if not await tracker.update_stage("Транскрибация клипов и подготовка субтитров...", "🎤"):
             raise Exception("Обработка отменена")
 
+        # Полная транскрипция только для отобранных (top_k) клипов.
         clip_transcripts = []
         clip_subtitles = {}
         for f in edited_files:

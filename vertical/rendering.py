@@ -92,7 +92,7 @@ def _run_facecam_top_split_layout(input_clip, output_file, target_width, target_
     normalized_fallback_mode = _normalize_facecam_fallback_mode(facecam_fallback_mode)
     normalized_anchor = _normalize_facecam_anchor(facecam_anchor)
     detect_started = time.perf_counter()
-    probe_seconds = min(6.0, duration) if duration > 0 else 6.0
+    probe_seconds = min(15.0, duration) if duration > 0 else 15.0
     probe_indexed = _probe_frames_with_indices_from_start(input_clip, max_probe_seconds=probe_seconds, sample_every_n_frames=3, max_samples=36)
     probe_frames = [frame for _, frame in probe_indexed]
     detectors = _get_face_detectors()
@@ -153,7 +153,7 @@ def _run_facecam_top_split_layout(input_clip, output_file, target_width, target_
     if not _camera_rect_sanity_ok(camera_rect, source_w, source_h):
         raise VideoProcessingError("Итоговый camera_rect не прошел sanity-check.")
     _save_facecam_debug_frames(probe_indexed, camera_rect, output_file, max_frames=5)
-    logging.info("facecam_detect_v3 backend=%s fallback_mode=%s anchor=%s subject_side=%s preferred_side=%s probe_frames=%s candidate_count=%s track_count=%s best_score=%s fallback_reason=%s final_source=%s final_rect=%s detect_once_ms=%s", normalized_backend, normalized_fallback_mode, normalized_anchor, normalized_side, resolved_side, len(probe_frames), webcam_debug.get("candidate_count"), webcam_debug.get("track_count"), webcam_debug.get("best_score"), fallback_reason, face_found_source, camera_rect, detect_once_ms)
+    logging.info("facecam_detect_v3 backend=%s fallback_mode=%s anchor=%s subject_side=%s preferred_side=%s probe_frames=%s candidate_count=%s track_count=%s best_score=%s best_rect=%s fallback_reason=%s final_source=%s final_rect=%s detect_once_ms=%s", normalized_backend, normalized_fallback_mode, normalized_anchor, normalized_side, resolved_side, len(probe_frames), webcam_debug.get("candidate_count"), webcam_debug.get("track_count"), webcam_debug.get("best_score"), webcam_debug.get("best_rect"), fallback_reason, face_found_source, camera_rect, detect_once_ms)
     content_rect = _build_content_crop(selected_face_box, source_w, source_h, bottom_aspect)
     filter_graph = _build_split_filter(camera_rect, content_rect, target_width, top_height, bottom_height)
     output_label = "[v]"

@@ -3,6 +3,7 @@
 import subprocess
 import os
 import uuid
+import json
 import logging
 from typing import Dict, List, Any, Optional
 
@@ -313,6 +314,56 @@ def transcribe_audio(input_video, output_dir=None, model_name="base", use_gpu=No
         cache.cache_transcription(url, transcript)
 
     return transcript
+
+
+def quick_word_density(input_video, output_dir=None, use_gpu=None):
+    """
+    Быстрая оценка плотности речи (слов/сек) в видеоклипе.
+    Использует модель 'tiny' для скорости независимо от настроек пользователя.
+    Не требует word_timestamps — только текст.
+
+    Возвращает float: слов в секунду (0.0 если нет речи или ошибка).
+    """
+    if use_gpu is None:
+        use_gpu = check_gpu_available()
+    try:
+        wav_file = extract_wav(input_video, output_dir)
+        try:
+            result = _transcribe_with_model(
+                wav_file,
+                model_name="tiny",
+                use_gpu=use_gpu,
+                word_timestamps=False,
+            )
+        finally:
+            if os.path.exists(wav_file):
+                try:
+                    os.remove(wav_file)
+                except OSError:
+                    pass
+
+        text = (result.get("text") or "").strip()
+        word_count = len(text.split()) if text else 0
+
+        # Определяем длительность через ffprobe
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "json", input_video,
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        duration = float(json.loads(r.stdout).get("format", {}).get("duration", 0))
+
+        if duration > 0 and word_count > 0:
+            wps = word_count / duration
+            logger.debug(
+                "quick_word_density %s: %d слов / %.1fс = %.2f слов/с",
+                os.path.basename(input_video), word_count, duration, wps,
+            )
+            return wps
+    except Exception as e:
+        logger.warning("quick_word_density ошибка для %s: %s", input_video, e)
+    return 0.0
 
 
 def get_model_info():

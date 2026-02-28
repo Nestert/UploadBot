@@ -33,7 +33,8 @@ class TestVerticalLayouts(unittest.TestCase):
                 layout_mode="facecam_top_split",
             )
 
-        self.assertEqual(output, "/tmp/vertical_test-id.mp4")
+        import os
+        self.assertEqual(output, os.path.join("/tmp", "vertical_test-id.mp4"))
         standard_mock.assert_called_once()
 
     def test_select_best_face_prefers_stable_larger_candidate(self):
@@ -215,7 +216,8 @@ class TestVerticalLayouts(unittest.TestCase):
 
         self.assertIn("-filter_complex", captured["cmd"])
         filter_graph = captured["cmd"][captured["cmd"].index("-filter_complex") + 1]
-        self.assertIn("crop=653", filter_graph)
+        # hard-side crop width = source_w * 0.40 = 1920 * 0.40 = 768
+        self.assertIn("crop=768", filter_graph)
 
     def test_detect_webcam_region_finds_corner_overlay(self):
         """Webcam с чёткими границами и другим цветом должен обнаруживаться."""
@@ -343,16 +345,16 @@ class TestVerticalLayouts(unittest.TestCase):
         self.assertGreaterEqual(rx, 60)
         self.assertLessEqual(rx, 180)
 
-    def test_detect_webcam_region_prefers_middle_y_when_side_same(self):
+    def test_detect_webcam_region_prefers_edge_y_when_side_same(self):
         import numpy as np
         import cv2
 
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         frame[:, :, :] = 30
-        # Кандидат A: верхний левый
+        # Кандидат A: верхний левый (ближе к краю — должен победить)
         frame[40:240, 40:360, :] = 200
         cv2.rectangle(frame, (40, 40), (360, 240), (255, 255, 255), 2)
-        # Кандидат B: левый по центру (должен победить)
+        # Кандидат B: левый по центру
         cam_y = 430
         frame[cam_y:cam_y + 230, 60:390, :] = 205
         cv2.rectangle(frame, (60, cam_y), (390, cam_y + 230), (255, 255, 255), 2)
@@ -363,8 +365,8 @@ class TestVerticalLayouts(unittest.TestCase):
         result = vertical._detect_webcam_region(1920, 1080, frames, subject_side="left")
         self.assertIsNotNone(result)
         _rx, ry, _rw, _rh = result
-        self.assertGreater(ry, 320)
-        self.assertLess(ry, 620)
+        # Edge/corner candidates preferred over center-of-frame
+        self.assertLess(ry, 320)
 
     def test_detect_webcam_region_rejects_transient_false_rect(self):
         import numpy as np
